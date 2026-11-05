@@ -190,7 +190,7 @@ python -m unittest discover -s tests -v
 - [x] `provides_tools` / `provides_hooks` match what `register()` registers.
 - [x] `requires_hermes: ">=0.19.0"`.
 - [x] No binaries, `.pyc`, self-updater or core overrides.
-- [ ] `plugin-catalog/hermes-time-machine.yaml` PR with a 40-character SHA pin.
+- [x] `plugin-catalog/hermes-time-machine.yaml` PR with a 40-character SHA pin — [#149553](https://github.com/NousResearch/hermes-agent/pull/149553).
 - [ ] Demo recorded (<90 s) and posted on X tagging `@NousResearch`.
 - [ ] Typeform submitted.
 

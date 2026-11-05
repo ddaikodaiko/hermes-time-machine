@@ -58,7 +58,7 @@ The catalog PR is human-reviewed. **Open it on Day 4, not Day 7.** If it is stil
 ## Day 4 — Monday 9 Nov
 
 - [ ] Record the <90 s demo (script in `docs/DEMO.md`).
-- [ ] Pin the final SHA and open the catalog PR using `docs/SUBMISSION.md`.
+- [x] Pin the final SHA and open the catalog PR using `docs/SUBMISSION.md`.
 - [ ] Add screenshots/GIF to the PR description.
 
 **Gate:** PR open before 23:59 local time.

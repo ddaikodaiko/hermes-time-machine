@@ -88,7 +88,7 @@ refuses to hide them.
 
 - **Plugin name:** hermes-time-machine
 - **Repository:** https://github.com/ddaikodaiko/hermes-time-machine
-- **Catalog PR:** https://github.com/NousResearch/hermes-agent/pull/TODO
+- **Catalog PR:** https://github.com/NousResearch/hermes-agent/pull/149553
 - **Demo link:** TODO
 - **One-line pitch:** Policy-driven workspace checkpoints for Hermes, with an effect ledger that tells you what a rewind cannot undo.
 - **What problem does it solve?** Agents break workspaces and push to remotes; existing undo only covers the agent's own file edits.
