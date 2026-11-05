@@ -6,8 +6,11 @@ Record at 1080p, terminal font large enough to read on a phone. No cuts that hid
 
 ```bash
 cd hermes-time-machine
-python demo/run_demo.py   # dry run once, then clear the terminal
+python demo/run_demo.py --pause   # press Enter to advance each step
 ```
+
+Dry-run once without `--pause`, then record with it so you can narrate each
+step. The output is identical; only the pacing changes.
 
 Have the X post text ready. Tag `@NousResearch`.
 

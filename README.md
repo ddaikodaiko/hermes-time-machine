@@ -158,6 +158,7 @@ If extraction fails, the previous contents are moved back.
 
 ```bash
 python demo/run_demo.py
+python demo/run_demo.py --pause   # press Enter between steps, for recording
 ```
 
 It creates a throwaway workspace, triggers an automatic checkpoint with a simulated `write_file`, breaks the workspace, records a `git push`, previews a rewind, restores, verifies and forks. Designed to be screen-recorded in under 90 seconds.

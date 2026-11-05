@@ -4,6 +4,7 @@ Creates a throwaway workspace, checkpoints it, simulates an agent breaking it,
 then previews and performs a rewind. No Hermes install required.
 
     python demo/run_demo.py
+    python demo/run_demo.py --pause   # wait for Enter between steps, for recording
 """
 
 from __future__ import annotations
@@ -33,6 +34,11 @@ def load_package():
 
 def line(title: str) -> None:
     print(f"\n=== {title} " + "=" * max(0, 58 - len(title)))
+    if "--pause" in sys.argv:
+        try:
+            input("  [Enter] ")
+        except EOFError:
+            pass
 
 
 def main() -> int:
