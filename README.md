@@ -171,7 +171,7 @@ python -m unittest discover -s tests -v
 - `tests/test_smoke.py` — policy, snapshots, rewind, fork, hooks (no Hermes required).
 - `tests/test_hermes_integration.py` — real `PluginManager`, real `tools.registry`, real hook dispatch (skipped when Hermes is not installed).
 
-11 tests, all passing on Hermes 0.19.0 / Python 3.13.
+13 tests, all passing on Hermes 0.19.0 / Python 3.13.
 
 ## Disclosure (catalog rule 13)
 

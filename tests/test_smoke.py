@@ -6,9 +6,11 @@ Run with: python -m unittest discover -s tests -v
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -120,6 +122,28 @@ class SmokeTest(unittest.TestCase):
             "terminal", {"command": "ls -la"}, self.workspace, []
         )
         self.assertEqual(safe, 0.0)
+
+    def test_invalid_checkpoint_id_is_rejected(self):
+        self.assertIsNone(pkg.handlers._load("../../etc"))
+        self.assertIsNone(pkg.handlers._load("ckpt_20260101T000000_ZZZZZZZZ"))
+        result = json.loads(
+            pkg.handlers.atm_rewind({"checkpoint_id": "../../etc", "confirm": True})
+        )
+        self.assertFalse(result["ok"])
+
+    def test_extract_refuses_path_traversal(self):
+        root = Path(self.tmp.name)
+        archive = root / "evil.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            info = tarfile.TarInfo("../escaped.txt")
+            data = b"owned"
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+        destination = root / "dest"
+        with self.assertRaises((pkg.snapshot.SnapshotError, tarfile.TarError)):
+            pkg.snapshot._extract(archive, destination)
+        self.assertFalse((root / "escaped.txt").exists())
 
     def test_hook_checkpoints_only_risky_calls(self):
         before = len(pkg.handlers._all_manifests())

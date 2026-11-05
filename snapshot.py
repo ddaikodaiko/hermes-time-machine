@@ -60,25 +60,43 @@ def assert_safe(workspace: Path) -> None:
             f"Refusing to protect a directory that contains the home directory: {workspace}"
         )
 
-    system_roots = {
-        Path("C:/Windows"),
+    # Exact matches only: these are broad trees where a real project may live.
+    exact_roots = {
         Path("C:/Program Files"),
         Path("C:/Program Files (x86)"),
         Path("/usr"),
-        Path("/etc"),
         Path("/var"),
         Path("/bin"),
         Path("/sbin"),
         Path("/lib"),
+        Path("/Library"),
+        Path("/Applications"),
+    }
+    # Exact matches and every descendant: nothing here should be snapshotted.
+    critical_roots = {
+        Path("C:/Windows"),
+        Path("/etc"),
         Path("/boot"),
         Path("/dev"),
+        Path("/proc"),
+        Path("/sys"),
+        Path("/System"),
+        Path("/private/etc"),
+        Path("/private/var"),
     }
-    for root in system_roots:
+    for root in exact_roots:
         try:
             if workspace == root.resolve():
                 raise SnapshotError(f"Refusing to protect a system directory: {workspace}")
         except OSError:
             continue
+    for root in critical_roots:
+        try:
+            resolved = root.resolve()
+        except OSError:
+            continue
+        if workspace == resolved or resolved in workspace.parents:
+            raise SnapshotError(f"Refusing to protect a system directory: {workspace}")
 
     data = storage.data_dir().resolve()
     if workspace == data or data in workspace.parents or workspace in data.parents:
@@ -96,7 +114,14 @@ def _is_excluded(relative: Path, excludes: set[str]) -> bool:
     return any(part in excludes for part in relative.parts)
 
 
-def measure(workspace: Path, excludes: set[str]) -> tuple[int, int]:
+def measure(
+    workspace: Path, excludes: set[str], limit_bytes: int | None = None
+) -> tuple[int, int]:
+    """Return ``(bytes, files)``, stopping early once *limit_bytes* is passed.
+
+    The early exit keeps a huge repository from being walked in full just to
+    decide that an automatic checkpoint should be skipped.
+    """
     total = 0
     files = 0
     for root, dirs, names in os.walk(workspace):
@@ -109,6 +134,8 @@ def measure(workspace: Path, excludes: set[str]) -> tuple[int, int]:
                 files += 1
             except OSError:
                 continue
+            if limit_bytes is not None and total > limit_bytes:
+                return total, files
     return total, files
 
 
@@ -153,13 +180,46 @@ def create(workspace: Path, checkpoint_id: str, excludes: set[str]) -> dict:
     }
 
 
+def _is_within(candidate: Path, root: Path) -> bool:
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return False
+    return resolved == root or root in resolved.parents
+
+
+def _safe_member(member: tarfile.TarInfo, destination: Path, root: Path) -> bool:
+    """Reject archive members that would land outside *destination*."""
+    if not _is_within(destination / member.name, root):
+        return False
+    if member.issym():
+        link = Path(member.linkname)
+        if link.is_absolute():
+            return False
+        return _is_within(destination / Path(member.name).parent / link, root)
+    if member.islnk():
+        link = Path(member.linkname)
+        if link.is_absolute():
+            return False
+        return _is_within(destination / link, root)
+    return True
+
+
 def _extract(archive: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
+    root = destination.resolve()
     with tarfile.open(archive, "r:gz") as tar:
         try:
+            # Python 3.12+ applies the same checks natively.
             tar.extractall(destination, filter="data")
-        except TypeError:  # Python < 3.12
-            tar.extractall(destination)
+        except TypeError:  # Python < 3.12 has no filter= argument
+            members = tar.getmembers()
+            for member in members:
+                if not _safe_member(member, destination, root):
+                    raise SnapshotError(
+                        f"Unsafe path in checkpoint archive: {member.name}"
+                    )
+            tar.extractall(destination, members=members)
 
 
 def restore(workspace: Path, checkpoint_id: str, excludes: set[str]) -> dict:

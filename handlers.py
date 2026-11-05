@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import threading
 from pathlib import Path
 
 from . import snapshot, storage
+
+_CHECKPOINT_ID_RE = re.compile(r"^ckpt_[0-9]{8}T[0-9]{6}_[0-9a-f]{8}$")
 
 _CONFIG: dict = {}
 _WORKSPACE: Path | None = None
@@ -64,9 +67,9 @@ def _manifest_path(checkpoint_id: str) -> Path:
 
 
 def _load(checkpoint_id: str | None) -> dict | None:
-    if not checkpoint_id:
+    if not checkpoint_id or not _CHECKPOINT_ID_RE.fullmatch(str(checkpoint_id)):
         return None
-    path = _manifest_path(checkpoint_id)
+    path = _manifest_path(str(checkpoint_id))
     if not path.exists():
         return None
     try:
@@ -156,8 +159,8 @@ def create_checkpoint(label: str, trigger: dict | None = None, auto: bool = Fals
     with _LOCK:
         target = workspace()
         excludes = snapshot.excludes_for(_CONFIG)
-        size, _ = snapshot.measure(target, excludes)
         limit = int(_CONFIG.get("max_snapshot_mb", 200) or 200) * 1024 * 1024
+        size, _ = snapshot.measure(target, excludes, limit if auto else None)
         if auto and size > limit:
             storage.append_jsonl(
                 storage.journal_path(),

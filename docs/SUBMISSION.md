@@ -1,34 +1,42 @@
-# Catalog entry (template)
+# Catalog submission
 
-Place this file at `plugin-catalog/hermes-time-machine.yaml` in a PR to
-`NousResearch/hermes-agent`. Replace the SHA after the final commit.
+Everything needed to open the PR against `NousResearch/hermes-agent`, plus the
+Typeform answers. Replace `PINNED_SHA` after the final commit is pushed.
+
+## Catalog entry
+
+Place this file at `plugin-catalog/hermes-time-machine.yaml` in the PR.
 
 ```yaml
 name: hermes-time-machine
-title: Hermes Time Machine
-description: >
-  Policy-driven workspace checkpoints with one-command rewind, fork, and an
-  effect ledger that flags actions a rollback cannot undo (git push, publishes,
-  HTTP writes, cloud changes).
 repo: https://github.com/ddaikodaiko/hermes-time-machine
-sha: TODO_40_CHARACTER_COMMIT_SHA
+sha: PINNED_SHA
 version: "0.1.0"
+title: Hermes Time Machine
+description: "Policy-driven workspace checkpoints for Hermes: one checkpoint before the first file-changing call of each turn and before risky commands (rm -rf, git push --force, DROP TABLE, writes outside the workspace), one-command rewind, fork into a sibling directory, and an effect ledger that refuses to hide actions a rewind cannot undo. Disclosure - writes a tar.gz snapshot of the configured workspace and JSONL journal/effect ledgers under HERMES_HOME/plugin-data/hermes-time-machine, keeps the last 10 pre-rewind copies in a trash directory, spawns no processes, makes no network calls, reads no credentials, and never blocks, approves or bypasses a tool call; a rewind moves the current workspace contents to trash and extracts the checkpoint over the workspace, refusing filesystem roots, the home directory, directories containing home, system directories, and workspaces overlapping plugin data."
+maintainer: ddaikodaiko
 tier: community
 category: tools
-maintainer: ddaikodaiko
 requires_hermes: ">=0.19.0"
+docs_url: https://github.com/ddaikodaiko/hermes-time-machine#readme
+platforms: [linux, macos, windows]
 capabilities:
-  tools:
+  provides_tools:
     - atm_checkpoint
     - atm_rewind
     - atm_fork
     - atm_list
     - atm_effects
-  hooks:
+  provides_hooks:
     - pre_tool_call
     - post_tool_call
-  env: []
+  provides_middleware: []
+  requires_env: []
 ```
+
+The field names matter: the schema uses `capabilities.provides_tools` and
+`capabilities.provides_hooks`, not `capabilities.tools` / `capabilities.hooks`.
+`tier` must stay `community`; only Nous maintainers set `verified` / `official`.
 
 ## PR title
 
@@ -60,11 +68,13 @@ refuses to hide them.
   extracts a checkpoint over the workspace. It refuses filesystem roots, the
   home directory, directories containing home, system directories, and
   workspaces overlapping plugin data.
+- Automatic snapshots are capped by `max_snapshot_mb` (default 200 MB) and
+  pruned by `retention` (default 20). Manual checkpoints are never pruned.
 
 ## Validation
 
 - [x] Loads in Hermes 0.19.0 with 5 tools and 2 hooks (`PluginManager` integration test).
-- [x] `python -m unittest discover -s tests -v` — 11 tests passing.
+- [x] `python -m unittest discover -s tests -v` — 13 tests passing.
 - [x] No binaries, `.pyc`, self-updater or core overrides.
 - [ ] `hermes plugins doctor . --ci` / `hermes plugins validate . --install-deps`
       (not present in 0.19.0; run if your build provides them).

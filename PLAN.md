@@ -41,8 +41,8 @@ The catalog PR is human-reviewed. **Open it on Day 4, not Day 7.** If it is stil
 - [x] Use the real Hermes home (`%LOCALAPPDATA%\hermes` on Windows).
 - [x] Add automatic mutation checkpoint (once per turn) and per-turn tests.
 - [x] Fix the safety check that rejected workspaces inside the home directory.
-- [x] 11 tests green, including 6 that use the real loader, registry and hooks.
-- [ ] Create the public GitHub repo and pin a 40-character SHA.
+- [x] 13 tests green, including 5 that use the real loader, registry and hooks.
+- [x] Create the public GitHub repo and pin a 40-character SHA.
 
 **Gate:** one real end-to-end rewind through Hermes' registry. ✅
 
