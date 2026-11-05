@@ -1,0 +1,203 @@
+"""End-to-end integration test against a real Hermes installation.
+
+This does not mock the plugin API. It copies the plugin into a throwaway
+Hermes home, lets ``PluginManager`` discover and load it, fires the real
+``pre_tool_call`` / ``post_tool_call`` hooks, and calls the tools through
+``tools.registry`` exactly as the agent would.
+
+Run with the Python that has Hermes installed:
+
+    python -m unittest tests.test_hermes_integration -v
+
+Skipped automatically when Hermes is not importable.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+try:
+    import hermes_cli.plugins as hermes_plugins  # noqa: F401
+
+    HERMES_AVAILABLE = True
+except Exception:  # pragma: no cover - depends on the environment
+    HERMES_AVAILABLE = False
+
+
+@unittest.skipUnless(HERMES_AVAILABLE, "Hermes Agent is not installed")
+class HermesIntegrationTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.workspace = root / "project"
+        self.workspace.mkdir()
+        (self.workspace / "app.py").write_text("v1", encoding="utf-8")
+
+        self.home = root / "hermes-home"
+        plugin_dir = self.home / "plugins" / "hermes-time-machine"
+        plugin_dir.parent.mkdir(parents=True)
+        shutil.copytree(
+            ROOT,
+            plugin_dir,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git", "tests"),
+        )
+
+        (self.home / "config.yaml").write_text(
+            "plugins:\n"
+            "  enabled:\n"
+            "    - hermes-time-machine\n"
+            "  entries:\n"
+            "    hermes-time-machine:\n"
+            "      settings:\n"
+            f"        workspace: {json.dumps(str(self.workspace))}\n"
+            "        auto_checkpoint: true\n"
+            "        risk_threshold: 0.6\n"
+            "        max_snapshot_mb: 50\n"
+            "        retention: 5\n",
+            encoding="utf-8",
+        )
+
+        self._old_home = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(self.home)
+        os.environ.pop("ATM_DATA_DIR", None)
+
+        from hermes_cli.plugins import get_plugin_manager
+
+        self.pm = get_plugin_manager()
+        self.pm.discover_and_load(force=True)
+
+        module = self._plugin().module
+        if module is not None:
+            module.guard._reset_for_tests()
+
+        from tools.registry import registry
+
+        self.registry = registry
+
+    def tearDown(self):
+        if self._old_home is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = self._old_home
+        self.tmp.cleanup()
+
+    # -- helpers ---------------------------------------------------------
+
+    def _plugin(self):
+        for key, plugin in self.pm._plugins.items():
+            if "time-machine" in key:
+                return plugin
+        self.fail("plugin not discovered")
+
+    def _call(self, name: str, args: dict) -> dict:
+        result = self.registry.dispatch(name, args)
+        return json.loads(result) if isinstance(result, str) else result
+
+    def _checkpoints(self) -> list:
+        return self._call("atm_list", {})["checkpoints"]
+
+    # -- tests -----------------------------------------------------------
+
+    def test_plugin_loads_with_tools_and_hooks(self):
+        plugin = self._plugin()
+        self.assertTrue(plugin.enabled, plugin.error)
+        self.assertIsNone(plugin.error)
+        self.assertEqual(
+            set(plugin.tools_registered),
+            {"atm_checkpoint", "atm_rewind", "atm_fork", "atm_list", "atm_effects"},
+        )
+        self.assertEqual(
+            set(plugin.hooks_registered), {"pre_tool_call", "post_tool_call"}
+        )
+
+    def test_safe_command_does_not_checkpoint(self):
+        self.pm.invoke_hook(
+            "pre_tool_call", tool_name="terminal", args={"command": "ls -la"}, task_id="t1"
+        )
+        self.assertEqual(self._checkpoints(), [])
+
+    def test_risky_command_checkpoints_then_rewind_restores(self):
+        self.pm.invoke_hook(
+            "pre_tool_call",
+            tool_name="terminal",
+            args={"command": "git push origin main --force"},
+            task_id="t1",
+        )
+        checkpoints = self._checkpoints()
+        self.assertEqual(len(checkpoints), 1)
+        self.assertTrue(checkpoints[0]["auto"])
+
+        # The agent breaks the workspace.
+        (self.workspace / "app.py").write_text("v2-broken", encoding="utf-8")
+        (self.workspace / "junk.txt").write_text("junk", encoding="utf-8")
+
+        # The command also had an external effect.
+        self.pm.invoke_hook(
+            "post_tool_call",
+            tool_name="terminal",
+            args={"command": "git push origin main --force"},
+            result="ok",
+            status="ok",
+            task_id="t1",
+        )
+
+        effects = self._call("atm_effects", {})
+        self.assertFalse(effects["safe_to_rewind"])
+        self.assertEqual(effects["irreversible"][0]["kind"], "git_push")
+
+        preview = self._call("atm_rewind", {"confirm": False})
+        self.assertTrue(preview["preview"])
+        self.assertFalse(preview["safe_to_rewind"])
+
+        blocked = self._call("atm_rewind", {"confirm": True})
+        self.assertFalse(blocked["ok"])
+        self.assertEqual(
+            (self.workspace / "app.py").read_text(encoding="utf-8"), "v2-broken"
+        )
+
+        restored = self._call(
+            "atm_rewind", {"confirm": True, "allow_irreversible": True}
+        )
+        self.assertTrue(restored["ok"])
+        self.assertEqual((self.workspace / "app.py").read_text(encoding="utf-8"), "v1")
+        self.assertFalse((self.workspace / "junk.txt").exists())
+
+    def test_write_file_triggers_one_automatic_checkpoint_per_turn(self):
+        self.pm.invoke_hook(
+            "pre_tool_call",
+            tool_name="write_file",
+            args={"path": str(self.workspace / "app.py")},
+            task_id="t1",
+            turn_id="turn-1",
+        )
+        self.pm.invoke_hook(
+            "pre_tool_call",
+            tool_name="patch",
+            args={"path": str(self.workspace / "app.py")},
+            task_id="t1",
+            turn_id="turn-1",
+        )
+        checkpoints = self._checkpoints()
+        self.assertEqual(len(checkpoints), 1)
+        self.assertEqual(checkpoints[0]["trigger"]["type"], "mutation")
+
+    def test_manual_checkpoint_and_fork(self):
+        created = self._call("atm_checkpoint", {"label": "base"})
+        self.assertTrue(created["ok"])
+
+        forked = self._call("atm_fork", {"name": "alt"})
+        self.assertTrue(forked["ok"])
+        path = Path(forked["path"])
+        self.assertTrue(path.is_dir())
+        self.assertEqual((path / "app.py").read_text(encoding="utf-8"), "v1")
+
+
+if __name__ == "__main__":
+    unittest.main()

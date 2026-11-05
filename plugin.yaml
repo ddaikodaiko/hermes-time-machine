@@ -1,0 +1,59 @@
+name: hermes-time-machine
+version: 0.1.0
+description: Policy-driven workspace checkpoints, rewind and fork for Hermes, with an effect ledger for irreversible actions.
+author: ddaikodaiko
+license: MIT
+homepage: https://github.com/ddaikodaiko/hermes-time-machine
+tags: [safety, rollback, checkpoints, workspace, time-travel]
+
+# Verified against Hermes Agent 0.19.0 (2026.7.20), the current PyPI release.
+requires_hermes: ">=0.19.0"
+
+provides_tools:
+  - atm_checkpoint
+  - atm_rewind
+  - atm_fork
+  - atm_list
+  - atm_effects
+
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+
+config_schema:
+  workspace:
+    type: str
+    default: ""
+    description: Absolute path to the workspace to protect. Empty means the current working directory.
+  auto_checkpoint:
+    type: bool
+    default: true
+    description: Take a checkpoint automatically before a risky tool call.
+  auto_checkpoint_mutations:
+    type: bool
+    default: true
+    description: Take one checkpoint before the first file-changing call of each turn.
+  mutation_cooldown_seconds:
+    type: int
+    default: 120
+    description: Minimum seconds between mutation checkpoints when the host provides no turn id.
+  risk_threshold:
+    type: float
+    default: 0.6
+    description: Minimum risk score (0-1) that triggers an automatic checkpoint.
+  max_snapshot_mb:
+    type: int
+    default: 200
+    description: Skip automatic snapshots larger than this. Manual checkpoints are always allowed.
+  retention:
+    type: int
+    default: 20
+    description: Number of automatic checkpoints to keep. Manual checkpoints are never pruned.
+  exclude_git:
+    type: bool
+    default: false
+    description: Exclude the .git directory from snapshots. Faster, but rewind will not restore git metadata.
+  extra_risky_patterns:
+    type: list
+    default: []
+    description: Additional regular expressions that mark a terminal command as risky.
