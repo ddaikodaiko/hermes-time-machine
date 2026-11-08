@@ -89,6 +89,9 @@ def assert_safe(workspace: Path) -> None:
         Path("/lib"),
         Path("/Library"),
         Path("/Applications"),
+        # macOS: /var is a symlink to /private/var and every temp dir lives under
+        # /private/var/folders, so only the root itself is refused.
+        Path("/private/var"),
     }
     # Exact matches and every descendant: nothing here should be snapshotted.
     critical_roots = {
@@ -100,7 +103,6 @@ def assert_safe(workspace: Path) -> None:
         Path("/sys"),
         Path("/System"),
         Path("/private/etc"),
-        Path("/private/var"),
     }
     for root in exact_roots:
         try:
