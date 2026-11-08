@@ -5,12 +5,11 @@ Run with: python -m unittest discover -s tests -v
 
 from __future__ import annotations
 
+
 import importlib.util
-import io
 import json
 import os
 import sys
-import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,12 +30,13 @@ def _load_package():
 
 
 pkg = _load_package()
+storage = pkg.storage
 
 
 class SmokeTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        root = Path(self.tmp.name)
+        root = Path(self.tmp.name).resolve()
         self.workspace = root / "workspace"
         self.workspace.mkdir()
         (self.workspace / "app.py").write_text("v1", encoding="utf-8")
@@ -66,22 +66,44 @@ class SmokeTest(unittest.TestCase):
 
         preview = json.loads(pkg.handlers.atm_rewind({"confirm": False}))
         self.assertTrue(preview["preview"])
+        self.assertEqual(preview["changes"]["modified"], ["app.py"])
+        self.assertEqual(preview["changes"]["added"], ["new.txt"])
+        self.assertTrue(preview["safe_to_rewind"])
 
         restored = json.loads(pkg.handlers.atm_rewind({"confirm": True}))
         self.assertTrue(restored["ok"])
         self.assertEqual((self.workspace / "app.py").read_text(encoding="utf-8"), "v1")
         self.assertFalse((self.workspace / "new.txt").exists())
+        self.assertEqual(restored["restored"], 1)
+        self.assertEqual(restored["removed"], 1)
+
+    def test_rewind_single_path(self):
+        json.loads(pkg.handlers.atm_checkpoint({"label": "before"}))
+        (self.workspace / "app.py").write_text("v2", encoding="utf-8")
+        (self.workspace / "notes.txt").write_text("changed", encoding="utf-8")
+        restored = json.loads(pkg.handlers.atm_rewind({"confirm": True, "paths": ["app.py"]}))
+        self.assertTrue(restored["ok"], restored)
+        self.assertEqual((self.workspace / "app.py").read_text(encoding="utf-8"), "v1")
+        self.assertEqual((self.workspace / "notes.txt").read_text(encoding="utf-8"), "changed")
+
+    def test_second_checkpoint_reuses_unchanged_files(self):
+        json.loads(pkg.handlers.atm_checkpoint({"label": "one"}))
+        second = json.loads(pkg.handlers.atm_checkpoint({"label": "two"}))
+        self.assertEqual(second["reused"], 2)
+        self.assertEqual(second["new_bytes"], 0)
 
     def test_irreversible_effect_blocks_rewind(self):
         created = json.loads(pkg.handlers.atm_checkpoint({"label": "before"}))
         checkpoint_id = created["checkpoint"]["id"]
-        pkg.storage.append_jsonl(
-            pkg.storage.effects_path(),
+        storage.append_jsonl(
+            storage.effects_path(),
             {
-                "ts": pkg.storage.now_iso(),
+                "ts": storage.now_iso(),
                 "kind": "git_push",
                 "reversible": False,
+                "status": "succeeded",
                 "reason": "test",
+                "workspace": str(self.workspace),
                 "checkpoint_id": checkpoint_id,
             },
         )
@@ -131,20 +153,6 @@ class SmokeTest(unittest.TestCase):
         )
         self.assertFalse(result["ok"])
 
-    def test_extract_refuses_path_traversal(self):
-        root = Path(self.tmp.name)
-        archive = root / "evil.tar.gz"
-        with tarfile.open(archive, "w:gz") as tar:
-            info = tarfile.TarInfo("../escaped.txt")
-            data = b"owned"
-            info.size = len(data)
-            tar.addfile(info, io.BytesIO(data))
-
-        destination = root / "dest"
-        with self.assertRaises((pkg.snapshot.SnapshotError, tarfile.TarError)):
-            pkg.snapshot._extract(archive, destination)
-        self.assertFalse((root / "escaped.txt").exists())
-
     def test_hook_checkpoints_only_risky_calls(self):
         before = len(pkg.handlers._all_manifests())
         pkg.guard.pre_tool_call(
@@ -156,7 +164,6 @@ class SmokeTest(unittest.TestCase):
             tool_name="terminal", args={"command": "git push origin main"}, session_id="s1"
         )
         self.assertEqual(len(pkg.handlers._all_manifests()), before + 1)
-
 
     def test_mutation_checkpoint_once_per_turn(self):
         before = len(pkg.handlers._all_manifests())

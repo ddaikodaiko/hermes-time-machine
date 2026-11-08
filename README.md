@@ -1,26 +1,116 @@
 # hermes-time-machine
 
-Policy-driven workspace checkpoints for [Hermes Agent](https://hermes-agent.nousresearch.com), with an **effect ledger** for the actions a rewind cannot undo.
+**The rollback that knows what it can't undo.**
 
-> Most agents can undo their own file edits. None of them can tell you that the `git push` they just ran is already out of reach.
+A plugin for [Hermes Agent](https://hermes-agent.nousresearch.com) 0.23+. It adds
+agent-visible checkpoints, an approval at the point of no return, a ledger of the
+effects a rewind cannot reach, and a memory of those effects that survives
+`/rollback`, `/undo`, `/retry` and context compaction.
+
+## The problem
+
+- Rewinding files is solved. Hermes has `/rollback`, and you can always restore a folder.
+- What no rewind reaches is everything that already left your machine: `git push`, `npm publish`, `terraform apply`, a pull request, a release.
+- Worse, `/rollback`, `/undo`, `/retry` and compaction rewind the *conversation* too. The model forgets it pushed. The remote does not.
 
 ## What it does
 
-- Takes a checkpoint of the workspace **before the first file-changing call of each turn** (`write_file`, `patch`, `rm`, `mv`, `sed -i`, migrations, installs).
-- Takes a checkpoint **before risky calls** even if they are not edits (`git push --force`, `rm -rf`, `DROP TABLE`, writes outside the workspace, your own regexes).
-- Records **external effects** (`git push`, `npm publish`, HTTP writes, cloud changes) and blocks a rewind that would silently pretend they never happened.
-- Restores the workspace in one call, keeping the previous contents in a bounded trash directory.
-- Forks a checkpoint into an independent directory to explore an alternative without touching the original.
-- Uses only the Python standard library. No native binaries, no shell, no network, no credentials.
+### 1. Point of no return
 
-## What it does **not** do
+Before an irreversible effect, the plugin asks Hermes' own approval prompt to stop and
+show the human what is about to become permanent, plus the command that would
+compensate it. It reads the pre-state from files on disk (`.git/refs`, `.git/config`,
+`package.json`), never by running `git` or `npm`.
 
-- **No process or RAM snapshots.** That needs CRIU/microVMs and is out of scope for a catalog-safe plugin.
-- **No conversation rewind.** It restores the environment, not the chat history.
-- **No external undo.** It cannot unsend an email, revert a payment or delete a published package. It only makes that visible.
-- **No GPU or Windows process state.** Filesystem only.
+```
+Point of no return (hermes-time-machine)
+• git push → origin/main: publishes 1f4e9a2..7c3d5e8. No rewind (atm_rewind or /rollback) can undo this.
+If needed later: git push --force-with-lease=refs/heads/main:<new sha> origin <old sha>:refs/heads/main
+Local files are covered by checkpoint ckpt_20261107T181319_8193be50.
+```
 
-Being explicit about this is part of the design: a rollback tool that overpromises is worse than none.
+(Shas are shortened here; the real message carries full 40-character shas. This is the
+output of `python demo/run_demo.py`.) The plugin never approves anything and never
+blocks anything by itself: it returns an `approve` directive and Hermes' approval flow
+does the rest.
+
+### 2. Effect ledger with compensation
+
+Every irreversible effect that actually succeeded is appended to a ledger together
+with the state needed to undo it: remote sha before the push, `package@version`, PR URL,
+release tag. Failed attempts are recorded as failed and never block anything.
+
+```
+/timemachine effects
+  Effects since ckpt_20261107T181319_8193be50: 1
+  2026-11-07 18:13:20  git push -> origin/main
+      undo: git push --force-with-lease=refs/heads/main:<new sha> origin <old sha>:refs/heads/main
+  Safe to rewind: files only; effects above stay
+```
+
+The lease means the compensation fails if somebody pushed in the meantime. The plugin
+only computes and shows the command; it does not run it.
+
+### 3. Effect memory
+
+Each turn, `pre_llm_call` compares the ledger of the current session with what the
+model can still see. If a recorded effect has disappeared from the history (rollback,
+undo, retry, compaction), a short reminder is injected, once per effect:
+
+```
+[hermes-time-machine] Effect memory: the conversation was rewound or compacted, but these actions already happened outside the workspace and were NOT undone:
+1. git push → origin/main at 19:13 (1f4e9a2..7c3d5e8). To revert if the user asks: git push --force-with-lease=refs/heads/main:<new sha> origin <old sha>:refs/heads/main
+Treat them as done. Do not repeat them, and do not assume they never happened. If the user wants them reverted, propose the command above; it goes through approval.
+```
+
+When none of the listed effects has a compensation command, the closing line instead says:
+"Nothing can undo them automatically; if the user wants them reverted, work out the
+compensation with them first."
+
+Verified with a real Hermes 0.23 session (Claude Sonnet, local bare remote): checkpoint
+before the first terminal edit, checkpoint before `git push`, the push recorded as
+succeeded with its `tool_call_id`, and the reminder replayed against the stored session
+after a simulated rollback (and silent while the push is still visible).
+
+Without it, "did you push anything?" after `/rollback` gets "No". With it, the model
+answers from the ledger and offers the compensation.
+
+### 4. Agent-visible checkpoints
+
+Incremental, content-addressed, time-bounded snapshots, taken before the first
+file-changing call of each turn and before risky commands. Unlike a slash command, the
+*agent* can use them: `atm_checkpoint`, `atm_list`, `atm_rewind` (preview, restore all
+or only some paths), `atm_fork` and `atm_effects`. Every preview lists what the restore
+will **not** undo:
+
+```
+still_true_outside: git push → origin/main   undo: git push --force-with-lease=...
+```
+
+Restoring over a recorded irreversible effect needs `allow_irreversible=true`, which
+acknowledges the effect; it does not undo it.
+
+## Works with Hermes `/rollback`
+
+Core `/rollback` (opt-in through `checkpoints.enabled`) snapshots through a shadow git
+store, restores files and undoes the last chat turn. It is a slash command, not a tool
+the model can call, and it has no notion of pushes or publishes. This plugin is
+complementary: keep `checkpoints.enabled: true` if you like it, and the plugin adds the
+parts below.
+
+| | Hermes `/rollback` | hermes-time-machine |
+|---|---|---|
+| Restore files | ✅ | ✅ (incremental, per path, fork) |
+| Undo the last chat turn | ✅ | ❌ (not its job; it covers for the forgetting instead) |
+| Agent can rewind itself | ❌ (not a tool) | ✅ `atm_rewind` |
+| Knows a push/publish happened | ❌ | ✅ ledger with pre-state |
+| Compensation command | ❌ | ✅ |
+| Approval at the point of no return | ❌ | ✅ through Hermes approvals |
+| Model remembers effects after a rewind or compaction | ❌ | ✅ effect memory |
+| Rewind preview lists what stays true outside | ❌ | ✅ |
+
+The plugin does not detect core `/rollback` directly. It notices the effect of it: the
+tool call that pushed is no longer in the conversation history.
 
 ## Install
 
@@ -29,179 +119,168 @@ hermes plugins install ddaikodaiko/hermes-time-machine
 hermes plugins enable hermes-time-machine --no-allow-tool-override
 ```
 
-The second flag matters: this plugin never replaces built-in tools, so it should not receive override permission.
+`--no-allow-tool-override` matters: the plugin never replaces built-in tools.
 
-Manual install (development):
+Manual (development):
 
 ```bash
-git clone https://github.com/ddaikodaiko/hermes-time-machine
-cp -r hermes-time-machine <hermes-home>/plugins/
+git clone https://github.com/ddaikodaiko/hermes-time-machine ~/.hermes/plugins/hermes-time-machine
 hermes plugins enable hermes-time-machine --no-allow-tool-override
-hermes plugins list --user --json
+hermes plugins validate ~/.hermes/plugins/hermes-time-machine
+hermes plugins doctor --ci
 ```
 
-`<hermes-home>` is `~/.hermes` on Linux/macOS and `%LOCALAPPDATA%\hermes` on Windows.
+Target: Hermes Agent 0.23.0 (`requires_hermes: ">=0.23.0"`). `hermes plugins validate`
+(security scan: safe, no core override) and `hermes plugins doctor --ci` pass.
 
-Verified against **Hermes Agent 0.19.0 (2026.7.20)**, the current PyPI release: the plugin loads with 5 tools and 2 hooks and the integration tests pass. Hermes 0.19.0 has no `plugins doctor` / `plugins validate` subcommands; if your build provides them, run them as well.
+Settings live under `plugins.entries.hermes-time-machine.settings` in `config.yaml`.
 
 ## Configuration
 
-Settings live under `plugins.entries.hermes-time-machine.settings` in `config.yaml`:
-
-```yaml
-plugins:
-  enabled:
-    - hermes-time-machine
-  entries:
-    hermes-time-machine:
-      settings:
-        workspace: "/absolute/path/to/project"   # empty = current working directory
-        auto_checkpoint: true
-        auto_checkpoint_mutations: true
-        mutation_cooldown_seconds: 120
-        risk_threshold: 0.6
-        max_snapshot_mb: 200
-        retention: 20
-        exclude_git: false
-        extra_risky_patterns: []
-```
+Every key in `plugin.yaml` `config_schema`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `workspace` | `""` | Protected directory. Empty means the process working directory. Set it explicitly if Hermes may start from your home directory. |
-| `auto_checkpoint` | `true` | Master switch for all automatic checkpoints. |
-| `auto_checkpoint_mutations` | `true` | One checkpoint before the first file-changing call of each turn. |
-| `mutation_cooldown_seconds` | `120` | Minimum gap between mutation checkpoints when the host provides no turn id. |
-| `risk_threshold` | `0.6` | Minimum risk score (0–1) for a risk-triggered checkpoint. |
-| `max_snapshot_mb` | `200` | Automatic snapshots larger than this are skipped and journaled. Manual checkpoints are always allowed. |
+| `workspace` | `""` | Absolute path to protect. Empty means the folder the agent's commands run in. |
+| `auto_checkpoint` | `true` | Take a checkpoint automatically before a risky tool call. |
+| `auto_checkpoint_mutations` | `true` | Take one checkpoint before the first file-changing call of each turn. |
+| `mutation_cooldown_seconds` | `120` | Minimum seconds between mutation checkpoints when the host provides no turn or session id. |
+| `risk_threshold` | `0.6` | Minimum risk score (0-1) that triggers an automatic checkpoint. |
+| `max_snapshot_mb` | `200` | Skip automatic snapshots larger than this. Manual checkpoints are always allowed. |
 | `retention` | `20` | Automatic checkpoints to keep. Manual checkpoints are never pruned. |
-| `exclude_git` | `false` | Exclude `.git` for faster snapshots. A rewind will then not restore git metadata. |
-| `extra_risky_patterns` | `[]` | Additional regexes that mark a terminal command as risky. |
+| `exclude_git` | `false` | Exclude `.git` from snapshots. Faster, but a rewind will not restore git metadata. |
+| `extra_risky_patterns` | `[]` | Extra regular expressions that mark a terminal command as risky. |
+| `irreversible_gate` | `approve` | `approve` asks through Hermes' approval prompt; `warn` only writes a journal entry; `off` disables the gate. |
+| `gate_allow_patterns` | `[]` | Regular expressions; a command matching one never triggers the approval prompt. |
+| `auto_budget_seconds` | `5.0` | Time limit (0.5-20 s) for an automatic checkpoint. A capture that runs out keeps its progress and resumes next time. |
+| `max_file_mb` | `50` | Files bigger than this are skipped (and counted) instead of copied. |
+| `effect_memory` | `true` | Remind the model of irreversible effects it can no longer see. |
+| `struggle_threshold` | `4` | Hint at `atm_rewind` after this many consecutive failing calls since the last checkpoint. `0` disables the hint. |
+| `annotate_results` | `true` | Add a `time_machine` note to tool results so the model knows where its restore point is. |
 
-`exclude_git: true` makes snapshots faster, but a rewind will not restore `.git` metadata.
+Directories never snapshotted: `node_modules`, `.venv`, `venv`, `__pycache__`,
+`.mypy_cache`, `.pytest_cache`, `.ruff_cache`, `dist`, `build`, `.next`, `.turbo`,
+`target`, `.idea`, `.DS_Store`.
 
-## Tools
+## Reference
 
-| Tool | What it does |
+### Tools (toolset `time_machine`)
+
+| Tool | Purpose |
 |---|---|
-| `atm_checkpoint(label)` | Manual checkpoint. |
-| `atm_rewind(checkpoint_id?, confirm?, allow_irreversible?)` | Preview by default; restore with `confirm=true`. |
-| `atm_fork(checkpoint_id?, name?)` | Extract a checkpoint into a sibling directory. |
-| `atm_list(limit?)` | List checkpoints, newest first, with trigger and size. |
-| `atm_effects(since?)` | List recorded effects and whether a rewind is safe. |
+| `atm_checkpoint(label?)` | Take a restore point now. Incremental, so repeating it is cheap. |
+| `atm_list(limit?, all_workspaces?)` | List restore points, newest first. |
+| `atm_rewind(checkpoint_id?, confirm?, allow_irreversible?, paths?)` | Preview (default) or restore. `confirm=true` applies it; `allow_irreversible=true` is also required when irreversible effects were recorded since the checkpoint. |
+| `atm_fork(checkpoint_id?, name?)` | Materialize a checkpoint into a new sibling folder `<workspace>-fork[-name]`. |
+| `atm_effects(since?)` | Effects recorded since a checkpoint, with compensation commands. |
 
-Typical flow:
+### Hooks
 
-```
-user: refactor the auth module
-agent: write_file(...)                  -> automatic checkpoint (mutation, turn 1)
-agent: patch(...)                       -> same checkpoint, no extra cost
-agent: terminal("git push origin main") -> effect ledger records an irreversible git_push
-agent: atm_effects({})                  -> safe_to_rewind: false
-agent: atm_rewind({"confirm": false})   -> preview + warning
-agent: atm_rewind({"confirm": true, "allow_irreversible": true})
-```
-
-## How the policy works
-
-`pre_tool_call` scores each call from 0 to 1:
-
-| Signal | Score |
+| Hook | What the plugin does |
 |---|---|
-| Terminal command matches a destructive or remote-write pattern | 0.90 |
-| Write tool targets a path outside the workspace | 0.80 |
-| Command has a known irreversible effect | 0.75 |
-| File-changing call that matched nothing else | mutation checkpoint, once per turn |
-| Anything else | 0.00 |
+| `pre_tool_call` | Parses the call, reads pre-state from disk, takes an automatic checkpoint when warranted, returns an `approve` directive for irreversible effects. Never raises. |
+| `post_tool_call` | Records effects that actually ran (success or failed) in the ledger; counts failing streaks. |
+| `transform_tool_result` | Adds a `time_machine` note with the checkpoint id (and the struggle hint) to the result. |
+| `pre_llm_call` | Effect memory: injects `{"context": ...}` for effects the history no longer shows. |
+| `post_compaction` | Records session-id lineage when a compaction rotates the session id, so effect memory survives compaction. |
 
-Above `risk_threshold` (default `0.6`), a checkpoint is taken **before** the tool runs. The hook never blocks a tool and never bypasses Hermes approvals. If anything fails, it fails open and the agent continues.
-
-## Effect ledger
-
-`post_tool_call` classifies completed commands and appends to `effects.jsonl`:
-
-- `git push`, `gh pr create`, `npm publish`, `docker push`
-- `kubectl apply/delete`, `terraform apply`, cloud create/delete/update
-- `curl`/`wget` writes, SQL `DROP/TRUNCATE/DELETE/UPDATE/INSERT`
-- `sendmail`/`mail`, remote shell writes
-- writes outside the workspace
-- local destructive commands (`rm -rf`, `git reset --hard`, `git clean -f`)
-
-`atm_rewind` refuses to run while there are irreversible effects after the checkpoint, unless `allow_irreversible=true`. The effects are never "undone"; they are acknowledged.
-
-## Storage
+### `/timemachine`
 
 ```
-<hermes-home>/plugin-data/hermes-time-machine/
-├── checkpoints/<id>/manifest.json
-├── checkpoints/<id>/workspace.tar.gz
-├── trash/<id>_<suffix>/          # previous contents of a rewind (last 10 kept)
-├── journal.jsonl                 # checkpoints, rewinds, forks, skips
-└── effects.jsonl                 # external effects
+/timemachine [status|list [n]|effects [id]|diff <id>|rewind <id> --yes [--allow-irreversible] [paths...]|help]
 ```
 
-Set `ATM_DATA_DIR` to override the location (used by tests and the demo).
+`status` (default) shows the protected folder, newest checkpoint, gate mode and the
+effects a rewind would not undo. `rewind` previews unless `--yes` is given.
+
+## How the gate decides
+
+1. `pre_tool_call` classifies the command (terminal-like tools) into effects. Effects
+   with `reversible: false` can trigger the gate: `git push`, `gh pr create`, `gh release create`,
+   `npm`/`yarn`/`pnpm publish`, `docker push`, `kubectl apply|delete|patch|replace`,
+   `terraform apply`, `aws`/`gcloud`/`az` create/delete/update calls, `curl`/`wget` writes,
+   SQL writes through `psql`/`mysql`/`sqlite3`, `mail`/`sendmail`, `ssh` running `rm|systemctl|docker|kubectl`,
+   and file writes outside the workspace. `git push --dry-run` is ignored.
+2. Mode `approve` (default): returns `{"action": "approve", "message": ..., "rule_key": ...}`.
+   Hermes shows its approval prompt; the human decides. Mode `warn`: only a journal entry.
+   Mode `off`: nothing.
+3. A command matching any regex in `gate_allow_patterns` skips the prompt.
+4. `rule_key` is stable per kind and target (`hermes-time-machine:git_push:origin/main`), so
+   Hermes' "approve for this session" applies to that kind of push to that branch, not to every irreversible command.
+5. Local destructive commands (`rm -rf`, `git reset --hard`, `git clean -f`) are recorded as reversible
+   and are not gated; they earn a checkpoint instead.
+
+The approval message is at most 700 characters and lists at most three effects.
 
 ## Safety
 
-A rewind moves the current workspace contents into `trash/` and extracts the checkpoint over the workspace. Before doing that, `snapshot.assert_safe` refuses:
+- `assert_safe` refuses to protect filesystem roots, the home directory, directories that
+  contain the home directory, system directories (`C:\Windows`, `/etc`, `/usr`, `/var`, ...)
+  and workspaces that overlap the plugin data directory. Unsafe workspace: checkpoints are
+  off, the gate and the ledger keep working.
+- Restore is two-phase: it first checks that every needed object exists in the store, then
+  replaces files one by one through a temp file. Replaced files and files created since the
+  checkpoint are moved to `plugin-data/hermes-time-machine/trash/`, not deleted (the last 10
+  rewinds are kept). Symlinks are skipped, never followed.
+- The plugin never approves, blocks or bypasses a tool call by itself.
+- It fails open. Hermes 0.23 fails **closed** (a `pre_tool_call` hook that raises or times
+  out blocks the tool), so every hook catches everything, and automatic checkpoints are
+  bounded by `auto_budget_seconds`. A capture that runs out of time is saved as a seed and
+  the next attempt continues from it.
 
-- filesystem roots and drive roots,
-- the home directory,
-- any directory that contains the home directory,
-- known system directories (`C:\Windows`, `C:\Program Files`, `/usr`, `/etc`, `/var`, ...),
-- workspaces that contain, or are contained by, the plugin data directory.
+## Disclosure
 
-If extraction fails, the previous contents are moved back.
+Catalog rule 13:
 
-## Demo
+- No shell commands, no subprocesses, no network calls, no background processes, no credentials.
+- Reads files in the protected workspace to snapshot them. To capture pre-state it reads
+  `.git/HEAD`, `.git/config`, `.git/packed-refs`, refs, and `package.json`. Credentials in
+  remote URLs are stripped before anything is stored or shown.
+- Writes only under `HERMES_HOME/plugin-data/hermes-time-machine` (checkpoint manifests,
+  content-addressed objects, trash, journal, effect ledger), and into the workspace when you restore.
 
-```bash
-python demo/run_demo.py
-python demo/run_demo.py --pause   # press Enter between steps, for recording
-```
+## Limitations
 
-It creates a throwaway workspace, triggers an automatic checkpoint with a simulated `write_file`, breaks the workspace, records a `git push`, previews a rewind, restores, verifies and forks. Designed to be screen-recorded in under 90 seconds.
+- Filesystem only. No RAM or process state, no databases, no containers.
+- No external undo. The plugin computes the compensation command and asks; it never runs it.
+- Remote-tracking refs can be stale. If you have not fetched, "remote before" may not match the real remote; the
+  lease in the compensation command protects against that, and the message says when the remote state is unknown.
+- Windows ACLs and extended attributes are not restored.
+- Core `/rollback` is detected indirectly, through the history (see above).
+- Restoring with `exclude_git: false` also restores `.git`, so local branch refs go back too.
+- Bulk pushes (`--all`, `--tags`, `--mirror`, several refspecs) get an approval and a note, but no automatic compensation.
+- Terraform, Docker, cloud, HTTP, SQL, mail and remote-shell effects are recorded with guidance, not a command.
 
-Tests:
+## Tests and benchmark
 
-```bash
-python -m unittest discover -s tests -v
-```
+Run `python -m unittest discover -s tests`. It discovers 99 tests: unit and flow
+tests, and 8 integration tests that load the plugin through the real Hermes 0.23
+`PluginManager` and hook dispatch. Those 8 skip when Hermes is not installed in the Python
+you use (one more skips where symlinks are unavailable); in that setup 90 run and pass.
 
-- `tests/test_smoke.py` — policy, snapshots, rewind, fork, hooks (no Hermes required).
-- `tests/test_hermes_integration.py` — real `PluginManager`, real `tools.registry`, real hook dispatch (skipped when Hermes is not installed).
+`python bench/bench_snapshot.py` measures the engine on a synthetic tree. These are the
+author's numbers on a Windows laptop with real-time antivirus (about 4 ms per file open),
+2,005 files / 53.4 MB. Treat them as worst case and run the benchmark on your machine:
 
-13 tests, all passing on Hermes 0.19.0 / Python 3.13.
+| Operation | Time |
+|---|---|
+| First capture | 21.7 s (spread over several automatic attempts thanks to resumable capture, or one manual checkpoint) |
+| Re-capture, nothing changed | 1.07 s |
+| Capture after 10 changes | 1.13 s |
+| Diff | 0.77 s |
+| Restore of 10 files | 1.45 s |
 
-## Disclosure (catalog rule 13)
+No Linux or macOS numbers have been measured yet.
 
-- **Shell commands:** none. The plugin never spawns a process.
-- **Network calls:** none.
-- **Files read/written:** the configured workspace, plus the plugin data directory.
-- **Background processes:** none.
-- **Credentials:** none collected or stored.
-- **Risky behaviour:** a rewind moves the current workspace contents to a trash directory and extracts a checkpoint over the workspace. See [Safety](#safety) for the refusal rules.
-
-## Catalog submission checklist
-
-- [x] Public repository owned by the submitter.
-- [x] `plugin.yaml` and `__init__.py` at the pinned commit.
-- [x] Plugin loads in Hermes 0.19.0 with the declared 5 tools and 2 hooks.
-- [x] `provides_tools` / `provides_hooks` match what `register()` registers.
-- [x] `requires_hermes: ">=0.19.0"`.
-- [x] No binaries, `.pyc`, self-updater or core overrides.
-- [x] `plugin-catalog/hermes-time-machine.yaml` PR with a 40-character SHA pin — [#149553](https://github.com/NousResearch/hermes-agent/pull/149553).
-- [ ] Demo recorded (<90 s) and posted on X tagging `@NousResearch`.
-- [ ] Typeform submitted.
+`python demo/run_demo.py` replays the whole story without Hermes or a model, on a fake git
+repository and a local bare remote written as files. See `docs/DESIGN.md` and `docs/DEMO.md`.
 
 ## Roadmap
 
-- **v0.2:** content-addressed chunks and incremental snapshots.
-- **v0.3:** optional memory layer through Hermes' existing Modal/Daytona backends (hot snapshot/pause), never through native binaries.
-- **v0.4:** policy packs per project (`strict.yaml`) and a team audit view.
-- **v1.0:** conversation-aware rewind via Hermes session hooks.
+- Measure and publish Linux and macOS benchmarks.
+- More compensation recipes (Terraform state, Helm, PyPI yank).
+- Use Hermes remote backends for process-level state, not native binaries.
 
 ## License
 
-MIT.
+MIT. See [LICENSE](LICENSE).

@@ -1,47 +1,51 @@
-"""hermes-time-machine — policy-driven workspace checkpoints for Hermes.
+"""hermes-time-machine: checkpoints, a point-of-no-return gate and effect memory for Hermes.
+
+Every rollback restores files. hermes-time-machine is the one that knows what a
+rollback can't undo.
 
 Public entry point: `register(ctx)`.
 """
 
 from __future__ import annotations
 
+from . import (  # noqa: F401  (submodules are re-exported for callers and tests)
+    commands,
+    effects,
+    gate,
+    guard,
+    handlers,
+    memory,
+    policy,
+    schemas,
+    snapshot,
+    storage,
+)
 from . import config as plugin_config
-from . import guard, handlers, schemas
+
+_TOOLS = (
+    ("atm_checkpoint", schemas.ATM_CHECKPOINT, handlers.atm_checkpoint),
+    ("atm_rewind", schemas.ATM_REWIND, handlers.atm_rewind),
+    ("atm_fork", schemas.ATM_FORK, handlers.atm_fork),
+    ("atm_list", schemas.ATM_LIST, handlers.atm_list),
+    ("atm_effects", schemas.ATM_EFFECTS, handlers.atm_effects),
+)
+
+_HOOKS = (
+    ("pre_tool_call", guard.pre_tool_call),
+    ("post_tool_call", guard.post_tool_call),
+    ("transform_tool_result", guard.transform_tool_result),
+    ("pre_llm_call", guard.pre_llm_call),
+    ("post_compaction", guard.post_compaction),
+)
 
 
 def register(ctx):
     handlers.configure(plugin_config.load(ctx))
 
-    ctx.register_tool(
-        name="atm_checkpoint",
-        toolset="time_machine",
-        schema=schemas.ATM_CHECKPOINT,
-        handler=handlers.atm_checkpoint,
-    )
-    ctx.register_tool(
-        name="atm_rewind",
-        toolset="time_machine",
-        schema=schemas.ATM_REWIND,
-        handler=handlers.atm_rewind,
-    )
-    ctx.register_tool(
-        name="atm_fork",
-        toolset="time_machine",
-        schema=schemas.ATM_FORK,
-        handler=handlers.atm_fork,
-    )
-    ctx.register_tool(
-        name="atm_list",
-        toolset="time_machine",
-        schema=schemas.ATM_LIST,
-        handler=handlers.atm_list,
-    )
-    ctx.register_tool(
-        name="atm_effects",
-        toolset="time_machine",
-        schema=schemas.ATM_EFFECTS,
-        handler=handlers.atm_effects,
-    )
+    for name, schema, handler in _TOOLS:
+        ctx.register_tool(name=name, toolset="time_machine", schema=schema, handler=handler)
 
-    ctx.register_hook("pre_tool_call", guard.pre_tool_call)
-    ctx.register_hook("post_tool_call", guard.post_tool_call)
+    for hook_name, callback in _HOOKS:
+        ctx.register_hook(hook_name, callback)
+
+    commands.register(ctx)
