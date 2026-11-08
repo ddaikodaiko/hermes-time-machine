@@ -1,5 +1,5 @@
 name: hermes-time-machine
-version: 0.2.0
+version: 0.2.1
 description: Incremental checkpoints, a point-of-no-return approval gate and effect memory for Hermes; a rollback restores files, this knows what it cannot undo.
 author: ddaikodaiko
 license: MIT

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.2.1 - 2026-11-08
+
+Found in a live Hermes 0.23 session and an adversarial review.
+
+### Changed
+
+- A restore requested by the model (`atm_rewind(confirm=true)`) always goes through Hermes'
+  approval prompt, with the files it changes and the effects that stay true.
+- `git commit && git push` in one call: the push is described as publishing the commits the
+  command creates, and the exact compensation is filled in from the refs after the push.
+- The gate matches commands only at the head of each sub-command; mentions (`echo`, `grep`,
+  comments, heredocs) and `--dry-run` no longer ask for approval.
+
+### Fixed
+
+- Effect memory no longer reminds delegated subagents of their parent's pushes.
+- Automatic checkpoints share one time budget (measure + capture).
+- gc never runs when a manifest cannot be read; restore handles read-only files on Windows;
+  invalid UTF-8 in the ledger is tolerated; `/timemachine` shows local times; path filters
+  are case-insensitive on Windows; workspaces under `/private/var` work on macOS.
+
 ## 0.2.0 - 2026-11-07
 
 Repositioned as "the rollback that knows what it can't undo", targeting Hermes Agent 0.23.0
