@@ -2,6 +2,10 @@
 
 **The rollback that knows what it can't undo.**
 
+▶ **[69-second demo](https://x.com/daik0zz/status/2119454575119737147)**: a real, unedited Hermes 0.23 session.
+The agent pushes, `/rollback` erases that turn from the chat, and the model still knows it
+pushed and gives the exact command to undo it.
+
 A plugin for [Hermes Agent](https://hermes-agent.nousresearch.com) 0.23+. It adds
 agent-visible checkpoints, an approval at the point of no return, a ledger of the
 effects a rewind cannot reach, and a memory of those effects that survives
