@@ -62,7 +62,8 @@ patterns), `snapshot.py` (engine), `handlers.py` (tools and ledger queries), `co
 1. **Point of no return.** The cheapest moment to prevent a mistake is the moment before
    it, and Hermes already has an approval UI. The plugin adds content, not a new UI: what
    becomes permanent, and the command that would compensate it. It never approves,
-   never blocks by itself, and the directive carries a `rule_key` per kind and target so the
+   never blocks by itself (a model-requested `atm_rewind(confirm=true)` is escalated to the human
+   with no `rule_key`, so each restore asks; `/timemachine rewind --yes` is the human path), and the directive carries a `rule_key` per kind and target so the
    user can approve "for this session" without opening the gate for everything.
 2. **Effect ledger.** A restore that cannot say what it did not restore is misleading. The
    ledger stores each irreversible effect with its pre-state, but only after
@@ -181,7 +182,7 @@ right repo; credentials in remote URLs are stripped.
 
 ## Evaluation
 
-99 tests via `python -m unittest discover -s tests` (8 of them integration
+122 tests via `python -m unittest discover -s tests` (9 of them integration
 tests that need Hermes 0.23 installed and skip otherwise), covering the engine, resumable
 capture, effect parsing, the gate message, effect memory and the full push, rollback,
 remind, rewind flow. The integration tests load the plugin through the real Hermes

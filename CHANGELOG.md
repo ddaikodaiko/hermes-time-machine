@@ -7,6 +7,8 @@ Repositioned as "the rollback that knows what it can't undo", targeting Hermes A
 
 ### Added
 
+- Model-driven restores need the human: `atm_rewind(confirm=true)` returns an `approve` directive (no `rule_key`) with the checkpoint, file counts and effects that stay true. The `/timemachine` command is the human path.
+
 - Point-of-no-return gate: `pre_tool_call` returns an `approve` directive for irreversible
   effects (`git push`, `npm publish`, `terraform apply`, and similar) with the blast radius
   and the compensation command. Modes `approve`, `warn`, `off`; `gate_allow_patterns`;

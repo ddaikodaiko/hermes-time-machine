@@ -32,7 +32,8 @@ Local files are covered by checkpoint ckpt_20261107T181319_8193be50.
 (Shas are shortened here; the real message carries full 40-character shas. This is the
 output of `python demo/run_demo.py`.) The plugin never approves anything and never
 blocks anything by itself: it returns an `approve` directive and Hermes' approval flow
-does the rest.
+does the rest. A restore requested by the model always goes through Hermes' approval
+prompt; the `/timemachine` command is the human path.
 
 ### 2. Effect ledger with compensation
 
@@ -170,7 +171,7 @@ Directories never snapshotted: `node_modules`, `.venv`, `venv`, `__pycache__`,
 |---|---|
 | `atm_checkpoint(label?)` | Take a restore point now. Incremental, so repeating it is cheap. |
 | `atm_list(limit?, all_workspaces?)` | List restore points, newest first. |
-| `atm_rewind(checkpoint_id?, confirm?, allow_irreversible?, paths?)` | Preview (default) or restore. `confirm=true` applies it; `allow_irreversible=true` is also required when irreversible effects were recorded since the checkpoint. |
+| `atm_rewind(checkpoint_id?, confirm?, allow_irreversible?, paths?)` | Preview (default) or restore. `confirm=true` applies it, but only after the human approves it in Hermes' approval prompt (no "always" rule is offered, so every model-driven restore asks); `allow_irreversible=true` is also required when irreversible effects were recorded since the checkpoint. |
 | `atm_fork(checkpoint_id?, name?)` | Materialize a checkpoint into a new sibling folder `<workspace>-fork[-name]`. |
 | `atm_effects(since?)` | Effects recorded since a checkpoint, with compensation commands. |
 
@@ -200,14 +201,19 @@ effects a rewind would not undo. `rewind` previews unless `--yes` is given.
    `npm`/`yarn`/`pnpm publish`, `docker push`, `kubectl apply|delete|patch|replace`,
    `terraform apply`, `aws`/`gcloud`/`az` create/delete/update calls, `curl`/`wget` writes,
    SQL writes through `psql`/`mysql`/`sqlite3`, `mail`/`sendmail`, `ssh` running `rm|systemctl|docker|kubectl`,
-   and file writes outside the workspace. `git push --dry-run` is ignored.
+   and file writes outside the workspace. `git push --dry-run`, `npm publish --dry-run` and `kubectl ... --dry-run` are ignored. Commands are matched per sub-command (`&&`, `;`, `|`, `&`, subshells, `bash -c`); text inside quotes, comments or heredocs never triggers the gate. In `git commit && git push` chains the pushed sha is read from disk after the push, so the ledger holds the exact compensation.
 2. Mode `approve` (default): returns `{"action": "approve", "message": ..., "rule_key": ...}`.
    Hermes shows its approval prompt; the human decides. Mode `warn`: only a journal entry.
    Mode `off`: nothing.
 3. A command matching any regex in `gate_allow_patterns` skips the prompt.
 4. `rule_key` is stable per kind and target (`hermes-time-machine:git_push:origin/main`), so
    Hermes' "approve for this session" applies to that kind of push to that branch, not to every irreversible command.
-5. Local destructive commands (`rm -rf`, `git reset --hard`, `git clean -f`) are recorded as reversible
+5. `atm_rewind` with `confirm=true` (the model overwriting workspace files) always returns an
+   `approve` directive with no `rule_key`: checkpoint, counts of modified/added/deleted files, the first
+   few paths and the external effects that stay true. If the preview cannot be computed, a generic
+   approval is returned instead (it fails toward asking). Previews, `atm_fork` and the human's
+   `/timemachine rewind --yes` are not gated.
+6. Local destructive commands (`rm -rf`, `git reset --hard`, `git clean -f`) are recorded as reversible
    and are not gated; they earn a checkpoint instead.
 
 The approval message is at most 700 characters and lists at most three effects.
@@ -253,10 +259,10 @@ Catalog rule 13:
 
 ## Tests and benchmark
 
-Run `python -m unittest discover -s tests`. It discovers 99 tests: unit and flow
-tests, and 8 integration tests that load the plugin through the real Hermes 0.23
-`PluginManager` and hook dispatch. Those 8 skip when Hermes is not installed in the Python
-you use (one more skips where symlinks are unavailable); in that setup 90 run and pass.
+Run `python -m unittest discover -s tests`. It discovers 122 tests: unit and flow
+tests, and 9 integration tests that load the plugin through the real Hermes 0.23
+`PluginManager` and hook dispatch. Those 9 skip when Hermes is not installed in the Python
+you use (one more skips where symlinks are unavailable); in that setup 112 run and pass.
 
 `python bench/bench_snapshot.py` measures the engine on a synthetic tree. These are the
 author's numbers on a Windows laptop with real-time antivirus (about 4 ms per file open),

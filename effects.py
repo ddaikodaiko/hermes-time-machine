@@ -40,11 +40,11 @@ IRREVERSIBLE_PATTERNS: list[tuple[str, str, str]] = [
     (r"\baws\s+\S+\s+(create|delete|update|put|terminate)\b", "aws_write", "Changed AWS resources."),
     (r"\bgcloud\s+\S+\s+(create|delete|update|deploy)\b", "gcloud_write", "Changed GCP resources."),
     (r"\baz\s+\S+\s+(create|delete|update)\b", "azure_write", "Changed Azure resources."),
-    (r"\bcurl\b[^\n]*(-X\s*(POST|PUT|PATCH|DELETE)|--data|--upload-file)", "http_write", "Sent an HTTP write request."),
+    (r"\bcurl\b[^\n]*(-X\s*(POST|PUT|PATCH|DELETE)|--request[ =](POST|PUT|PATCH|DELETE)|--data|--upload-file|--json|--form|\s-(?-i:[dFT])\b)", "http_write", "Sent an HTTP write request."),
     (r"\bwget\b[^\n]*(--post-data|--post-file)", "http_write", "Sent an HTTP write request."),
     (r"\b(psql|mysql|sqlite3)\b[^\n]*\b(drop|truncate|delete|update|insert)\b", "database_write", "Changed a database."),
     (r"\b(sendmail|mail)\b", "email", "Sent an email."),
-    (r"\bssh\b[^\n]+\s+['\"]?[^\n]*(rm|systemctl|docker|kubectl)\b", "remote_shell", "Ran a command on a remote host."),
+    (r"\bssh\b[^\n]+\s+['\"]?[^\n]*\b(rm|systemctl|docker|kubectl)\b", "remote_shell", "Ran a command on a remote host."),
 ]
 
 LOCAL_DESTRUCTIVE_PATTERNS: list[tuple[str, str, str]] = [
@@ -145,14 +145,21 @@ def _effect(
     }
 
 
+_HEREDOC = re.compile(r"""<<-?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_][\w.-]*))""")
+
+
 def split_commands(command: str) -> list[str]:
-    """Split a shell line on ``&&``, ``||``, ``;``, ``|`` and newlines (not inside quotes)."""
+    """Split a shell line on ``&&``, ``||``, ``;``, ``|``, ``&``, subshell parens and newlines.
+
+    Quoted text, ``#`` comments and heredoc bodies never produce commands.
+    """
     try:
         if not isinstance(command, str):
             return []
         parts: list[str] = []
         buf: list[str] = []
         quote = ""
+        heredocs: list[str] = []
         i, n = 0, len(command)
         while i < n:
             ch = command[i]
@@ -166,11 +173,33 @@ def split_commands(command: str) -> list[str]:
             elif ch in "'\"":
                 quote = ch
                 buf.append(ch)
+            elif ch == "#" and (not buf or buf[-1].isspace()):
+                while i < n and command[i] != "\n":
+                    i += 1
+                continue
+            elif ch == "<" and command.startswith("<<", i) and not command.startswith("<<<", i):
+                m = _HEREDOC.match(command, i)
+                if m:
+                    heredocs.append(m.group(1) or m.group(2) or m.group(3))
+                    i = m.end()
+                    continue
+                buf.append(ch)
             elif ch == "\\" and i + 1 < n and command[i + 1] in "\n;|&":
                 buf.append(ch)
                 buf.append(command[i + 1])
                 i += 1
-            elif ch in ";\n|" or (ch == "&" and i + 1 < n and command[i + 1] == "&"):
+            elif ch == "\n" and heredocs:
+                parts.append("".join(buf))
+                buf = []
+                i += 1
+                while heredocs and i <= n:
+                    end = command.find("\n", i)
+                    line = command[i:] if end < 0 else command[i:end]
+                    i = n + 1 if end < 0 else end + 1
+                    if line.strip() == heredocs[0]:
+                        heredocs.pop(0)
+                continue
+            elif ch in ";\n|()`" or (ch == "&" and not (buf and buf[-1] in "<>") and not command.startswith("&>", i)):
                 if ch in "|&" and i + 1 < n and command[i + 1] == ch:
                     i += 1
                 parts.append("".join(buf))
@@ -222,8 +251,33 @@ def _strip_redirections(tokens: list[str]) -> list[str]:
     return out
 
 
-_WRAPPERS = {"sudo", "env", "time", "command", "nohup", "exec"}
+_WRAPPERS = {"sudo", "env", "time", "command", "nohup", "exec", "timeout", "nice", "xargs", "stdbuf",
+             "setsid", "doas", "builtin"}
+_CONTROL = {"then", "do", "else", "elif", "if", "while", "until", "!", "{", "}", "&", "fi", "done"}
+_WRAPPER_VALUE_OPTS = {"-u", "-g", "-U", "-C", "-k", "-s", "-n", "-p", "-i", "-I", "-P"}
 _SHELLS = {"sh", "bash", "zsh", "dash"}
+
+
+def _head_index(tokens: list[str]) -> int:
+    """Index of the real command: skips ``VAR=x``, ``then``/``do``, ``sudo -u x``, ``timeout 30`` ..."""
+    i, n = 0, len(tokens)
+    while i < n:
+        tok = tokens[i]
+        low = Path(tok).name.lower()
+        if tok.lower() in _CONTROL or re.match(r"^\w+=", tok):
+            i += 1
+            continue
+        if low in _WRAPPERS:
+            i += 1
+            while i < n and tokens[i].startswith("-"):
+                i += 2 if tokens[i] in _WRAPPER_VALUE_OPTS and i + 1 < n else 1
+            while i < n and re.match(r"^\w+=", tokens[i]):
+                i += 1
+            if low == "timeout" and i < n and re.match(r"^[\d.]+[smhd]?$", tokens[i]):
+                i += 1
+            continue
+        break
+    return i
 
 
 def _segments(command: str, workspace: Path | None, base: Path | None = None, depth: int = 0) -> list[tuple[list[str], Path | None]]:
@@ -232,6 +286,7 @@ def _segments(command: str, workspace: Path | None, base: Path | None = None, de
     cwd = base if base is not None else workspace
     for seg in split_commands(command):
         tokens = _tokenize(seg)
+        tokens = tokens[_head_index(tokens):]
         if not tokens:
             continue
         if tokens[0] == "cd" or (tokens[0].lower() == "set-location"):
@@ -242,6 +297,9 @@ def _segments(command: str, workspace: Path | None, base: Path | None = None, de
                     cwd = target if target.is_absolute() or cwd is None else cwd / target
                 except Exception:
                     pass
+            continue
+        tokens = tokens[_head_index(tokens):]
+        if not tokens:
             continue
         name = Path(tokens[0]).name.lower()
         if depth < 2 and name in _SHELLS and "-c" in tokens:
@@ -455,13 +513,37 @@ def _parse_push(tokens: list[str], cwd: Path | None) -> dict | None:
     return info
 
 
+_COMMIT_MAKERS = {"commit", "merge", "cherry-pick", "rebase", "am", "revert", "pull"}
+
+
+def _git_subcommand(tokens: list[str]) -> str | None:
+    """The git subcommand of a tokenised command, or None when it is not git."""
+    start = None
+    for i, tok in enumerate(tokens[:5]):
+        if Path(tok).name.lower() in ("git", "git.exe"):
+            start = i
+            break
+        if not (re.match(r"^\w+=", tok) or tok in _WRAPPERS):
+            return None
+    if start is None:
+        return None
+    i = start + 1
+    while i < len(tokens) and tokens[i].startswith("-"):
+        i += 2 if tokens[i] in _GIT_OPTS_WITH_VALUE else 1
+    return tokens[i] if i < len(tokens) else None
+
+
 def _git_pushes(command: str, workspace: Path | None) -> list[dict]:
     pushes = []
+    creates_commits = False
     for tokens, cwd in _segments(command, workspace):
         info = _parse_push(tokens, cwd)
         if info is not None:
             info["evidence"] = " ".join(tokens)
+            info["pending_commits"] = creates_commits
             pushes.append(info)
+        elif _git_subcommand(tokens) in _COMMIT_MAKERS:
+            creates_commits = True
     return pushes
 
 
@@ -560,14 +642,37 @@ def _git_push_effect(info: dict, command: str, read_disk: bool) -> dict:
                         _read_ref(git, src if src.startswith("refs/") else f"refs/heads/{src}", packed)
                         or _read_ref(git, f"refs/tags/{src}", packed)
                     )
+            pending = bool(info.get("pending_commits")) and not info["delete"] and (
+                src == "HEAD" or src is None or src == head_branch
+            )
+            if pending:
+                local_sha = None  # HEAD moves before the push runs; it is read again afterwards
             if branch:
                 remote_sha = _read_ref(git, f"refs/remotes/{remote}/{branch}", packed)
             new_branch = remote_sha is None and not info["delete"]
             pre = {"repo": str(git[0]), "remote": remote, "remote_url": remote_url, "branch": branch,
                    "local_sha": local_sha, "remote_sha_before": remote_sha, "force": force,
                    "delete": info["delete"], "new_branch": new_branch}
+            if pending:
+                pre["pending_commits"] = True
             if branch:
-                if info["delete"]:
+                if pending:
+                    if remote_sha:
+                        compensation = (
+                            f"git push --force-with-lease=refs/heads/{branch} "
+                            f"{remote} {remote_sha}:refs/heads/{branch}"
+                        )
+                        note = (
+                            "This command creates new commit(s) before pushing; the exact new sha is filled "
+                            f"in after the push. The command restores {remote}/{branch} to {_short(remote_sha)}."
+                        )
+                    else:
+                        compensation = f"git push {remote} --delete {branch}"
+                        note = (
+                            "This command creates new commit(s) before pushing, and no remote-tracking ref "
+                            f"for {remote}/{branch} existed locally. Confirm the branch is new before deleting it."
+                        )
+                elif info["delete"]:
                     if remote_sha:
                         compensation = f"git push {remote} {remote_sha}:refs/heads/{branch}"
                         note = f"Recreates {remote}/{branch} at the commit it had before it was deleted."
@@ -624,7 +729,7 @@ def _find_segment(kind: str, command: str, workspace: Path | None) -> tuple[list
         text = " ".join(tokens)
         for pat in pats:
             try:
-                if re.search(pat, text, re.IGNORECASE):
+                if re.match(pat, text, re.IGNORECASE):
                     return tokens, cwd
             except re.error:
                 continue
@@ -754,6 +859,16 @@ _GIT_PUSH_HINT = re.compile(r"\bgit\b[^\n]*\bpush\b", re.IGNORECASE)
 _GIT_PUSH_PLAIN = re.compile(r"\bgit\s+push\b", re.IGNORECASE)
 _DRY_RUN = re.compile(r"--dry-run|\s-n\b")
 
+def _is_dry_run(tokens: list[str]) -> bool:
+    """`npm publish --dry-run`, `kubectl apply --dry-run=client`: nothing is changed."""
+    for tok in tokens:
+        if tok == "--dry-run":
+            return True
+        if tok.startswith("--dry-run="):
+            return tok.split("=", 1)[1].lower() not in ("none", "false")
+    return False
+
+
 def _analyse(tool_name: str, args, workspace: Path | None, read_disk: bool) -> list[dict]:
     effects: list[dict] = []
     seen: set[str] = set()
@@ -773,15 +888,16 @@ def _analyse(tool_name: str, args, workspace: Path | None, read_disk: bool) -> l
                     except Exception:
                         effects.append(_effect("git_push", False, reason, info["evidence"],
                                                note=_UNKNOWN_REMOTE_NOTE.format(remote="origin")))
-            elif _GIT_PUSH_PLAIN.search(command) and not _DRY_RUN.search(command):
-                effects.append(_effect("git_push", False, reason, command,
-                                       note=_UNKNOWN_REMOTE_NOTE.format(remote="origin")))
             seen.add("git_push")
+        heads = _segments(command, workspace)
         for pattern, kind, reason in IRREVERSIBLE_PATTERNS:
             if kind == "git_push":
                 continue
             try:
-                matched = re.search(pattern, command, re.IGNORECASE)
+                matched = next(
+                    (t for t, _c in heads if re.match(pattern, " ".join(t), re.IGNORECASE) and not _is_dry_run(t)),
+                    None,
+                )
             except re.error:
                 continue
             if not matched:
@@ -811,7 +927,7 @@ def _analyse(tool_name: str, args, workspace: Path | None, read_disk: bool) -> l
             if kind in seen:
                 continue
             try:
-                matched = re.search(pattern, command, re.IGNORECASE)
+                matched = next((t for t, _c in heads if re.match(pattern, " ".join(t), re.IGNORECASE)), None)
             except re.error:
                 continue
             if matched:
@@ -936,6 +1052,46 @@ def outcome(tool_name: str, result) -> dict:
 _PR_URL = re.compile(r"https://github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)")
 
 
+def _resolve_pushed_sha(out: dict) -> None:
+    """After a chained `commit && push` ran: read the sha git recorded for the pushed branch."""
+    try:
+        pre = out["pre_state"]
+        repo, remote, branch = pre.get("repo"), pre.get("remote"), pre.get("branch")
+        if not (repo and remote and branch):
+            return
+        git = _find_git(Path(repo))
+        if not git:
+            return
+        sha = _read_ref(git, f"refs/remotes/{remote}/{branch}")
+        if not sha:
+            return
+        before = pre.get("remote_sha_before")
+        pre["local_sha"] = sha
+        pre["pushed_sha"] = sha
+        pre["pending_commits"] = False
+        if before and before == sha:
+            out["compensation"] = None
+            out["compensation_note"] = "The push did not move the remote ref; nothing to undo."
+        elif before:
+            out["compensation"] = (
+                f"git push --force-with-lease=refs/heads/{branch}:{sha} {remote} {before}:refs/heads/{branch}"
+            )
+            out["compensation_note"] = (
+                f"Restores {remote}/{branch} to the commit it had before this push; "
+                "the lease makes it fail if anyone pushed since."
+            )
+        else:
+            out["compensation"] = (
+                f"git push --force-with-lease=refs/heads/{branch}:{sha} {remote} :refs/heads/{branch}"
+            )
+            out["compensation_note"] = (
+                f"No remote-tracking ref for {remote}/{branch} existed before, so this push most likely "
+                "created the branch. Confirm it is new before deleting it."
+            )
+    except Exception:
+        pass
+
+
 def finalize(effect: dict, result, workspace: Path | None) -> dict:
     """Copy of ``effect`` enriched with post-call facts (e.g. PR URL) and the call ``outcome``."""
     try:
@@ -944,6 +1100,8 @@ def finalize(effect: dict, result, workspace: Path | None) -> dict:
         res = outcome("", result)
         out["outcome"] = res
         out["executed"] = res["status"] != "failed"
+        if out.get("kind") == "git_push" and out["executed"] and out["pre_state"].get("pending_commits"):
+            _resolve_pushed_sha(out)
         if out.get("kind") == "github_pr":
             text = _as_text(result)
             try:

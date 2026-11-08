@@ -2,8 +2,9 @@
 
 * ``pre_tool_call``: takes a checkpoint before a risky call and before the first
   file-changing call of each turn, and escalates irreversible external effects
-  to Hermes' own human-approval gate (the point-of-no-return gate). It never
-  approves anything and never blocks by itself.
+  to Hermes' own human-approval gate (the point-of-no-return gate). A restore
+  requested by the model (``atm_rewind`` with ``confirm=true``) always asks the
+  human too. It never approves anything and never blocks by itself.
 * ``post_tool_call``: records every irreversible effect that actually
   succeeded in the effect ledger, and tracks failing streaks.
 * ``transform_tool_result``: tells the model where its restore point is.
@@ -178,8 +179,71 @@ def _auto_checkpoint(tool_name, args, config, kwargs, session) -> str | None:
     return checkpoint_id
 
 
+_REWIND_GENERIC = (
+    "Restore workspace (hermes-time-machine)\n"
+    "The agent asked to restore the workspace to a checkpoint. Files changed since then "
+    "will be reverted (previous contents are kept in the plugin trash). "
+    "Preview unavailable; use /timemachine rewind to inspect."
+)
+
+
+def _rewind_message(args, kwargs) -> str:
+    """Plain-text approval message for a model-driven restore (<= gate.MAX_MESSAGE chars)."""
+    manifest = handlers.resolve(args.get("checkpoint_id"))
+    if not manifest:
+        return _REWIND_GENERIC
+    paths = handlers._clean_paths(args.get("paths"))
+    counts = handlers.preview_changes(manifest, paths).get("counts") or {}
+    blocking = handlers.irreversible_since(manifest, kwargs.get("session_id"))
+    when = str(manifest.get("created_at") or "")
+    when = when[11:16] if len(when) >= 16 else when
+    label = manifest.get("label") or "checkpoint"
+    parts = []
+    for key, word in (("modified", "modified"), ("deleted", "deleted (will be restored)"), ("added", "added")):
+        n = int(counts.get(key) or 0)
+        if n:
+            parts.append(f"{n} {word}")
+    summary = ", ".join(parts) if parts else "no file differences"
+    lines = [
+        "Restore workspace (hermes-time-machine)",
+        f"Checkpoint {manifest.get('id')} ({label}, {when}): {summary}"
+        + (" file(s) will be reverted; new files go to the trash." if parts else "."),
+    ]
+    changes = handlers.preview_changes(manifest, paths)
+    names = [str(n) for k in ("modified", "deleted", "added") for n in (changes.get(k) or [])][:3]
+    if names:
+        lines.append("Files: " + ", ".join(names))
+    if blocking:
+        shown = []
+        for e in blocking[:2]:
+            kind = str(e.get("kind") or "effect").replace("_", " ")
+            shown.append(kind + (f" -> {e['target']}" if e.get("target") else ""))
+        more = f" (+{len(blocking) - 2} more)" if len(blocking) > 2 else ""
+        lines.append("Still true outside (not undone): " + "; ".join(shown) + more + ".")
+        comp = next((str(e.get("compensation")) for e in blocking if e.get("compensation")), "")
+        if comp:
+            lines.append("To revert: " + comp)
+    lines.append("Previous contents are kept in the plugin trash.")
+    return gate._clip("\n".join(lines), gate.MAX_MESSAGE)
+
+
+def _rewind_directive(args, kwargs) -> dict:
+    """Approval for a model-callable restore. No rule_key: the human approves every one."""
+    try:
+        message = _rewind_message(args, kwargs)
+    except Exception as exc:
+        _safe_journal({"type": "hook_error", "hook": "pre_tool_call.rewind_preview", "error": str(exc)[:300]})
+        message = _REWIND_GENERIC
+    return {"action": "approve", "message": message}
+
+
 def pre_tool_call(tool_name=None, args=None, **kwargs):
     try:
+        if str(tool_name or "") == "atm_rewind":
+            # A restore overwrites workspace files: a model-driven one always needs the human.
+            if isinstance(args, dict) and handlers._flag(args.get("confirm")):
+                return _rewind_directive(args, kwargs)
+            return None
         if not tool_name or str(tool_name).startswith("atm_"):
             return None
         config = handlers.config()
@@ -447,10 +511,10 @@ def pre_llm_call(**kwargs):
         with _LOCK:
             already = _NOTIFIED.setdefault(sid, set())
             snapshot_already = set(already)
+        # Only the compaction lineage recorded by post_compaction counts. Hermes also
+        # passes parent_session_id for delegated subagents, which must NOT inherit the
+        # parent's effects (a fresh subagent was never "rewound").
         ids = set(lineage(sid))
-        parent = kwargs.get("parent_session_id")
-        if parent:
-            ids.update(lineage(parent))
         items = memory.forgotten(ids, history, records, snapshot_already)
         if not items:
             return None

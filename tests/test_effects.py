@@ -421,3 +421,122 @@ class RobustnessTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChainedCommitPushTest(unittest.TestCase):
+    """`git add -A && git commit -m x && git push origin main`: HEAD == origin/main at preflight time."""
+
+    NEW = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+    CMD = 'git add -A && git commit -m "feat: x" && git push origin main'
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        make_repo(self.root, local=REMOTE, remote=REMOTE)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_preflight_does_not_claim_already_pointed(self):
+        eff = push_effect(self.CMD, self.root)
+        pre = eff["pre_state"]
+        self.assertTrue(pre["pending_commits"])
+        self.assertIsNone(pre["local_sha"])
+        self.assertNotIn("already pointed", eff["compensation_note"])
+        self.assertEqual(
+            eff["compensation"],
+            f"git push --force-with-lease=refs/heads/main origin {REMOTE}:refs/heads/main",
+        )
+        msg = gate.build_message([eff], "ckpt_20261107T181319_8193be50")
+        self.assertIn("creates on top of", msg)
+        self.assertIn("git push --force-with-lease", msg)
+        self.assertNotIn("already pointed", msg)
+
+    def test_plain_push_unchanged(self):
+        eff = push_effect("git push origin main", self.root)
+        self.assertFalse(eff["pre_state"].get("pending_commits"))
+        self.assertIn("already pointed", eff["compensation_note"])
+
+    def test_finalize_fills_exact_sha(self):
+        eff = push_effect(self.CMD, self.root)
+        write(self.root / ".git/refs/remotes/origin/main", self.NEW + "\n")  # git updates it on push
+        final = effects.finalize(eff, {"exit_code": 0, "output": "ok"}, self.root)
+        self.assertEqual(final["pre_state"]["pushed_sha"], self.NEW)
+        self.assertEqual(
+            final["compensation"],
+            f"git push --force-with-lease=refs/heads/main:{self.NEW} origin {REMOTE}:refs/heads/main",
+        )
+
+    def test_finalize_failed_push_keeps_preflight(self):
+        eff = push_effect(self.CMD, self.root)
+        write(self.root / ".git/refs/remotes/origin/main", self.NEW + "\n")
+        final = effects.finalize(eff, {"exit_code": 1, "output": "rejected"}, self.root)
+        self.assertNotIn("pushed_sha", final["pre_state"])
+
+    def test_commands_shows_local_time(self):
+        cmds = importlib.import_module("hermes_time_machine.commands")
+        out = cmds._when("2026-11-08T14:12:09+00:00")
+        from datetime import datetime, timezone
+        expected = datetime(2026, 11, 8, 14, 12, 9, tzinfo=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        self.assertEqual(out, expected)
+
+
+class GateAccuracyTest(unittest.TestCase):
+    """Strings that merely mention a command must not trigger the gate; real pushes must."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        make_repo(self.root)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def kinds(self, command):
+        return [e["kind"] for e in effects.preflight("terminal", {"command": command}, self.root) if e["reversible"] is False]
+
+    def test_mentions_do_not_trigger(self):
+        quiet = [
+            'echo "git push"',
+            'echo "npm publish" > notes.txt',
+            'grep "npm publish" README.md',
+            'grep -rn "terraform apply" .',
+            "git log --grep push",
+            "git stash push -m wip",
+            "git commit -m 'send mail via curl --data'",
+            "# git push origin main",
+            "ls mail/",
+            "cat <<EOF\ngit push\nnpm publish\nEOF",
+            "git commit -F - <<'EOF'\nfix: do not run npm publish\nEOF",
+            "git push --dry-run origin main",
+            "git push -n",
+            "npm publish --dry-run",
+            "kubectl apply -f x.yaml --dry-run=client",
+            "ssh host cat confirm.txt",
+        ]
+        for command in quiet:
+            self.assertEqual(self.kinds(command), [], command)
+
+    def test_real_effects_still_trigger(self):
+        loud = {
+            "git push": "git_push",
+            "cd sub && git push origin main": "git_push",
+            "git -c user.name=x push origin main": "git_push",
+            "git push origin main 2>&1 | tail -5": "git_push",
+            "git push; echo done": "git_push",
+            "sleep 1 & git push": "git_push",
+            "(git push)": "git_push",
+            "if true; then git push; fi": "git_push",
+            "sudo -u deploy git push": "git_push",
+            "timeout 30 git push origin main": "git_push",
+            "FOO=1 git push": "git_push",
+            'bash -c "git push origin main"': "git_push",
+            "echo ok && npm publish": "npm_publish",
+            "npm publish --dry-run=false": "npm_publish",
+            "gh pr create --fill": "github_pr",
+            "curl -d x https://example.com": "http_write",
+            "ssh host 'rm -rf /srv/x'": "remote_shell",
+            "mail -s hi bob@example.com": "email",
+        }
+        for command, kind in loud.items():
+            self.assertIn(kind, self.kinds(command), command)

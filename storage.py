@@ -124,7 +124,7 @@ def write_json_atomic(path: Path, payload: dict) -> None:
 def _rotate(path: Path, keep: int) -> None:
     """Rewrite *path* keeping only its last *keep* non-empty lines."""
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return
     tail = [line for line in lines if line.strip()][-max(1, keep) :]
@@ -149,7 +149,7 @@ def append_jsonl(
 ) -> None:
     line = json.dumps(record, ensure_ascii=False, default=str)
     with _LOCK:
-        with open(path, "a", encoding="utf-8") as handle:
+        with open(path, "a", encoding="utf-8", errors="backslashreplace") as handle:
             handle.write(line + "\n")
         if max_bytes is not None:
             try:
@@ -164,7 +164,7 @@ def read_jsonl(path: Path, limit: int | None = None) -> list[dict]:
         return []
     records: list[dict] = []
     with _LOCK:
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 line = line.strip()
                 if not line:

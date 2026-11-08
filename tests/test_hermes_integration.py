@@ -140,6 +140,22 @@ class HermesIntegrationTest(unittest.TestCase):
         # A safe command is not escalated.
         self.assertIsNone(self._directive("ls -la", tool_call_id="p2").action)
 
+    def test_model_restore_goes_through_hermes_approval(self):
+        ckpt = self._call("atm_checkpoint", {"label": "good"})["checkpoint"]["id"]
+        (self.workspace / "app.py").write_text("v2-broken", encoding="utf-8")
+        args = {"checkpoint_id": ckpt, "confirm": True}
+        directive = hermes_plugins._get_pre_tool_call_directive_details(
+            "atm_rewind", args, task_id="t1", session_id="s1", tool_call_id="r1"
+        )
+        self.assertEqual(directive.action, "approve")
+        self.assertIn("Restore workspace", directive.message)
+        self.assertIn("1 modified", directive.message)
+        # Previews and forks are not escalated.
+        preview = hermes_plugins._get_pre_tool_call_directive_details(
+            "atm_rewind", {"checkpoint_id": ckpt}, task_id="t1", session_id="s1"
+        )
+        self.assertIsNone(preview.action)
+
     def test_risky_command_checkpoints_then_rewind_restores(self):
         command = "git push origin main --force"
         directive = self._directive(command, tool_call_id="p1", turn_id="turn-1")

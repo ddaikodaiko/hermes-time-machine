@@ -85,7 +85,8 @@ chat turn but does not know about pushes or publishes.
 - Writes only under `HERMES_HOME/plugin-data/hermes-time-machine`, and into the workspace
   when a rewind is confirmed. Replaced files go to a trash directory (last 10 rewinds kept).
 - Never approves, blocks or bypasses a tool call by itself; it only returns an `approve`
-  directive that Hermes' approval flow handles.
+  directive that Hermes' approval flow handles. A restore requested by the model always goes
+  through Hermes' approval prompt; the /timemachine command is the human path.
 - `assert_safe` refuses filesystem roots, the home directory, directories containing it,
   system directories and workspaces overlapping the plugin data directory.
 - Automatic snapshots are capped by `max_snapshot_mb` (200) and pruned by `retention` (20).
@@ -94,7 +95,7 @@ chat turn but does not know about pushes or publishes.
 
 - [x] Hermes Agent 0.23.0: `hermes plugins validate` passes (security scan: safe, no core override).
 - [x] `hermes plugins doctor --ci` passes.
-- [x] `python -m unittest discover -s tests`: 99 tests discovered, 8 of them
+- [x] `python -m unittest discover -s tests`: 122 tests discovered, 9 of them
       integration tests that load the plugin through the real 0.23 `PluginManager` and
       hook dispatch (they skip when Hermes is not installed).
 - [x] No binaries, `.pyc`, self-updater or core overrides.

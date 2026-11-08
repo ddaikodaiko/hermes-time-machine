@@ -44,7 +44,7 @@ Done in response (v0.2.0):
 - [x] `transform_tool_result` annotation, `/timemachine` command.
 - [x] Retargeted to Hermes 0.23.0 (`requires_hermes: ">=0.23.0"`); `hermes plugins validate`
       and `hermes plugins doctor --ci` pass.
-- [x] 99 tests (unit, flow and 8 integration tests through the real 0.23 `PluginManager`).
+- [x] 122 tests (unit, flow and 9 integration tests through the real 0.23 `PluginManager`).
 - [x] Benchmark on a Windows laptop with real-time antivirus (worst case; no Linux or macOS numbers).
 - [x] Docs rewritten: README, DESIGN, DEMO, SUBMISSION, CHANGELOG; `demo/run_demo.py` rebuilt.
 

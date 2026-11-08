@@ -31,7 +31,7 @@ ATM_REWIND = {
         "Preview or restore the workspace to a checkpoint. Use it when your changes broke the "
         "project and fixing forward is costing more than starting over. Preview first (default); "
         "it shows file changes and any external effects (pushes, publishes) a restore will NOT "
-        "undo. Restoring needs confirm=true, plus allow_irreversible=true when such effects exist."
+        "undo. Restoring needs confirm=true, plus allow_irreversible=true when such effects exist; the human is always asked to approve a restore."
     ),
     "parameters": {
         "type": "object",

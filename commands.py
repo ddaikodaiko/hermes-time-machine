@@ -10,6 +10,7 @@ It runs in the Hermes gateway/CLI process: it returns text and never prints.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 import os
 import shlex
 
@@ -64,7 +65,14 @@ def _mb(value: int) -> str:
 
 
 def _when(ts) -> str:
-    return str(ts or "")[:19].replace("T", " ")
+    """Stored timestamps are UTC ISO; humans see local time, like Hermes' own UI."""
+    try:
+        parsed = datetime.fromisoformat(str(ts))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return str(ts or "")[:19].replace("T", " ")
 
 
 def _effect_line(effect: dict) -> str:

@@ -382,12 +382,21 @@ class EffectMemoryTest(FlowBase):
         self.assertEqual(guard.lineage("B"), ["B"])
         self.assertIsNone(self.llm(self.history(False), session_id="B"))
 
-    def test_lineage_is_cycle_safe_and_parent_kwarg_counts(self):
+    def test_lineage_is_cycle_safe(self):
         guard.post_compaction(session_id="B", old_session_id="s1")
         guard.post_compaction(session_id="s1", old_session_id="B")
         self.assertEqual(guard.lineage("B"), ["B", "s1"])
+
+    def test_subagent_parent_session_id_is_not_followed(self):
         out = guard.pre_llm_call(
             session_id="C", parent_session_id="s1", conversation_history=self.history(False)
+        )
+        self.assertIsNone(out)
+
+    def test_compaction_rotation_with_parent_kwarg_still_reminds(self):
+        guard.post_compaction(session_id="B", old_session_id="s1")
+        out = guard.pre_llm_call(
+            session_id="B", parent_session_id="s1", conversation_history=self.history(False)
         )
         self.assertIsNotNone(out)
 
@@ -591,6 +600,17 @@ class SlashCommandTest(FlowBase):
         self.assertIn("Error", self.cmd("diff ckpt_20200101T000000_deadbeef"))
         self.assertIn("Usage", self.cmd("diff"))
 
+    def test_windows_path_filter_is_case_insensitive(self):
+        with mock.patch.object(snapshot.os, "name", "nt"):
+            match = snapshot._matcher(snapshot._norm_paths(["SRC/App.py", "Docs"]))
+            self.assertTrue(match("src/app.py"))
+            self.assertTrue(match("docs/readme.md"))
+            self.assertFalse(match("docs2/x"))
+        with mock.patch.object(snapshot.os, "name", "posix"):
+            match = snapshot._matcher(["SRC/App.py"])
+            self.assertFalse(match("src/app.py"))
+            self.assertTrue(match("SRC/App.py"))
+
     def test_registration(self):
         ctx = mock.Mock()
         commands.register(ctx)
@@ -674,3 +694,102 @@ class ConfigTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdversarialFixesTest(FlowBase):
+    def test_string_false_confirm_is_only_a_preview(self):
+        ckpt = ok(handlers.atm_checkpoint({"label": "a"}))["checkpoint"]["id"]
+        write(self.ws / "app.py", "changed")
+        out = ok(handlers.atm_rewind({"checkpoint_id": ckpt, "confirm": "false"}))
+        self.assertTrue(out.get("preview"))
+        self.assertEqual((self.ws / "app.py").read_text(), "changed")
+
+    def test_ledger_with_invalid_utf8_still_reads_and_appends(self):
+        handlers.append_effect({"kind": "x", "ts": "t"})
+        with open(storage.effects_path(), "ab") as fh:
+            fh.write(b'\xff\xfe garbage\n')
+        self.assertEqual(len(handlers.read_ledger()), 1)
+        storage._rotate(storage.effects_path(), 5)
+        handlers.append_effect({"kind": "y", "ts": "t2"})
+        self.assertEqual(len(handlers.read_ledger()), 2)
+
+    def test_gc_skipped_when_a_manifest_is_unreadable(self):
+        ckpt = ok(handlers.atm_checkpoint({"label": "a"}))["checkpoint"]["id"]
+        objects = [p for p in (self.root / "data" / "objects").rglob("*") if p.is_file()]
+        self.assertTrue(objects)
+        manifest = snapshot.checkpoint_dir(ckpt) / "manifest.json"
+        manifest.write_text("{ not json", encoding="utf-8")  # e.g. locked or half-written
+        handlers._prune()
+        self.assertTrue(all(p.exists() for p in objects))
+
+    def test_auto_checkpoint_measure_is_time_bounded(self):
+        self.configure(auto_budget_seconds=0.5)
+        with mock.patch.object(snapshot, "measure", return_value=(-1, 0)):
+            self.assertIsNone(handlers.create_checkpoint("auto", {}, auto=True))
+        self.assertEqual(self.checkpoints(), [])
+
+    def test_restore_over_read_only_file(self):
+        ckpt = ok(handlers.atm_checkpoint({"label": "a"}))["checkpoint"]["id"]
+        target = self.ws / "app.py"
+        write(target, "changed")
+        os.chmod(target, 0o444)
+        out = ok(handlers.atm_rewind({"checkpoint_id": ckpt, "confirm": True}))
+        self.assertEqual(out.get("errors"), [])
+        self.assertEqual(target.read_text(), "v1")
+
+
+class ModelRestoreApprovalTest(FlowBase):
+    """A restore requested by the model must always reach the human."""
+
+    def _broken(self):
+        ckpt = ok(handlers.atm_checkpoint({"label": "good"}))["checkpoint"]["id"]
+        write(self.ws / "app.py", "broken")
+        write(self.ws / "notes.txt", "broken")
+        write(self.ws / "junk.txt", "junk")
+        return ckpt
+
+    def test_confirm_true_asks_the_human_with_counts(self):
+        ckpt = self._broken()
+        out = self.pre("atm_rewind", {"checkpoint_id": ckpt, "confirm": True})
+        self.assertEqual(out["action"], "approve")
+        self.assertNotIn("rule_key", out)
+        self.assertLessEqual(len(out["message"]), 700)
+        self.assertIn(ckpt, out["message"])
+        self.assertIn("2 modified", out["message"])
+        self.assertIn("1 added", out["message"])
+        self.assertIn("app.py", out["message"])
+        # Nothing was restored by the hook itself.
+        self.assertEqual((self.ws / "app.py").read_text(), "broken")
+
+    def test_message_lists_effects_that_stay_true(self):
+        ckpt = self._broken()
+        handlers.append_effect({
+            "kind": "git_push", "target": "origin/main", "reversible": False,
+            "status": "succeeded", "ts": storage.now_iso(), "workspace": str(self.ws),
+            "session_id": "s1", "compensation": "git push --force-with-lease origin x:main",
+        })
+        out = self.pre("atm_rewind", {"checkpoint_id": ckpt, "confirm": "yes"})
+        self.assertIn("Still true outside", out["message"])
+        self.assertIn("git push", out["message"])
+
+    def test_preview_and_string_false_are_not_gated(self):
+        ckpt = self._broken()
+        self.assertIsNone(self.pre("atm_rewind", {"checkpoint_id": ckpt}))
+        self.assertIsNone(self.pre("atm_rewind", {"checkpoint_id": ckpt, "confirm": "false"}))
+        self.assertIsNone(self.pre("atm_rewind", {"checkpoint_id": ckpt, "confirm": False}))
+
+    def test_other_atm_tools_stay_ungated(self):
+        self.assertIsNone(self.pre("atm_fork", {"confirm": True}))
+        self.assertIsNone(self.pre("atm_checkpoint", {}))
+
+    def test_preview_failure_still_asks_the_human(self):
+        ckpt = self._broken()
+        with mock.patch.object(handlers, "preview_changes", side_effect=RuntimeError("boom")):
+            out = self.pre("atm_rewind", {"checkpoint_id": ckpt, "confirm": True})
+        self.assertEqual(out["action"], "approve")
+        self.assertIn("Restore workspace", out["message"])
+
+    def test_unknown_checkpoint_and_garbage_args_ask_generically(self):
+        out = self.pre("atm_rewind", {"checkpoint_id": "nope", "confirm": True})
+        self.assertEqual(out["action"], "approve")
+        self.assertIsNone(self.pre("atm_rewind", "garbage"))

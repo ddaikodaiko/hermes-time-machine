@@ -61,7 +61,16 @@ def _describe(effect: dict) -> str:
     pre = effect.get("pre_state") or {}
     head = f"• {label}" + (f" → {target}" if target else "")
     kind = effect.get("kind")
-    if kind == "git_push" and isinstance(pre, dict) and pre.get("local_sha"):
+    if kind == "git_push" and isinstance(pre, dict) and pre.get("pending_commits"):
+        before = _short(pre.get("remote_sha_before"))
+        prose = (
+            f"publishes the commit(s) this command creates on top of {before}."
+            if before
+            else "publishes the commit(s) this command creates (new branch on the remote)."
+        )
+        if pre.get("force"):
+            prose += " Force push."
+    elif kind == "git_push" and isinstance(pre, dict) and pre.get("local_sha"):
         local, before = _short(pre.get("local_sha")), _short(pre.get("remote_sha_before"))
         if pre.get("delete"):
             prose = f"deletes the remote branch (was {before})."

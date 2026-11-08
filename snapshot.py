@@ -135,7 +135,7 @@ def _is_excluded(relative: Path, excludes: set[str]) -> bool:
 
 
 def measure(
-    workspace: Path, excludes: set[str], limit_bytes: int | None = None
+    workspace: Path, excludes: set[str], limit_bytes: int | None = None, deadline: float | None = None
 ) -> tuple[int, int]:
     """Return ``(bytes, files)``, stopping early once *limit_bytes* is passed.
 
@@ -145,6 +145,8 @@ def measure(
     total = 0
     files = 0
     for root, dirs, names in os.walk(workspace):
+        if deadline is not None and time.monotonic() > deadline:
+            return -1, files  # too slow to size: the caller skips the automatic checkpoint
         dirs[:] = [name for name in dirs if name not in excludes]
         for name in names:
             if name in excludes:
@@ -348,10 +350,18 @@ def _norm_paths(paths: list[str] | None) -> list[str] | None:
     return out
 
 
+def _fold(path: str) -> str:
+    """Case-fold paths on Windows (case-insensitive filesystems); identity elsewhere."""
+    return os.path.normcase(path).replace("\\", "/").lower() if os.name == "nt" else path
+
+
 def _matcher(paths: list[str] | None):
     if paths is None:
         return lambda rel: True
-    return lambda rel: any(rel == p or rel.startswith(p + "/") for p in paths)
+    folded = [_fold(p) for p in paths]
+    return lambda rel: any(
+        (r := _fold(rel)) == p or r.startswith(p + "/") for p in folded
+    )
 
 
 def _is_link(path: str) -> bool:
@@ -610,7 +620,12 @@ def _write_object(
         shutil.copyfile(store.path(h) if store else object_path(h), tmp)
         if os.name != "nt" and exec_bit:
             os.chmod(tmp, os.stat(tmp).st_mode | 0o100)
-        os.replace(tmp, target)
+        try:
+            os.replace(tmp, target)
+        except PermissionError:
+            # A read-only file (Windows refuses to replace it): clear the bit and retry once.
+            os.chmod(target, os.stat(target).st_mode | 0o200)
+            os.replace(tmp, target)
     except BaseException:
         try:
             tmp.unlink()

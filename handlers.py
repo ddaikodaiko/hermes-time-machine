@@ -291,9 +291,32 @@ def _seed_hashes() -> set[str]:
     return out
 
 
+def _manifests_complete(manifests: list[dict]) -> bool:
+    """False when a checkpoint folder exists whose manifest could not be read (locked, corrupt,
+    listing failed): garbage collecting then could delete objects a live checkpoint needs."""
+    try:
+        loaded = {m.get("id") for m in manifests}
+        for child in storage.checkpoints_dir().iterdir():
+            if not child.is_dir() or child.name in loaded:
+                continue
+            path = child / "manifest.json"
+            if not path.exists():
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return False
+            if isinstance(data, dict) and isinstance(data.get("tree"), dict):
+                return False
+        return True
+    except OSError:
+        return False
+
+
 def _prune() -> None:
     retention = int(_CONFIG.get("retention", 20) or 20)
     manifests = _all_manifests()
+    gc_safe = _manifests_complete(manifests)
     if retention >= 1:
         automatic = [item for item in manifests if item.get("auto")]
         for stale in automatic[retention:]:
@@ -303,8 +326,9 @@ def _prune() -> None:
                 continue
         manifests = _all_manifests()
     try:
-        referenced = snapshot.referenced_hashes([m.get("tree") or {} for m in manifests])
-        snapshot.gc(referenced | _seed_hashes())
+        if gc_safe:
+            referenced = snapshot.referenced_hashes([m.get("tree") or {} for m in manifests])
+            snapshot.gc(referenced | _seed_hashes())
     except Exception:
         pass
     _prune_trash()
@@ -402,8 +426,16 @@ def create_checkpoint(label: str, trigger: dict | None = None, auto: bool = Fals
         target = workspace()
         excludes = snapshot.excludes_for(_CONFIG)
         limit = int(_CONFIG.get("max_snapshot_mb", 200) or 200) * 1024 * 1024
+        started = time.monotonic()
+        budget = (
+            float(_CONFIG.get("auto_budget_seconds", 5.0) or 5.0) if auto else _MANUAL_BUDGET_SECONDS
+        )
         if auto:
-            size, _ = snapshot.measure(target, excludes, limit)
+            size, _ = snapshot.measure(target, excludes, limit, deadline=started + budget)
+            if size < 0:
+                _journal({"type": "checkpoint_skipped", "reason": "measure_timeout",
+                          "budget_seconds": budget, "workspace": str(target)})
+                return None
             if size > limit:
                 _journal(
                     {
@@ -416,12 +448,8 @@ def create_checkpoint(label: str, trigger: dict | None = None, auto: bool = Fals
                 )
                 return None
 
-        budget = (
-            float(_CONFIG.get("auto_budget_seconds", 5.0) or 5.0) if auto else _MANUAL_BUDGET_SECONDS
-        )
         max_file = int(_CONFIG.get("max_file_mb", 50) or 50) * 1024 * 1024
         previous = _previous_tree(target)
-        started = time.monotonic()
         try:
             tree = snapshot.capture(
                 target,
@@ -550,6 +578,13 @@ def _clean_paths(value) -> list[str] | None:
 # ---------------------------------------------------------------------------
 
 
+def _flag(value) -> bool:
+    """Models sometimes send "false" as a string; bool("false") must not mean yes."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on", "y", "t")
+    return bool(value)
+
+
 def _dumps(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False, default=str)
 
@@ -581,7 +616,7 @@ def atm_list(args: dict, **kwargs) -> str:
     try:
         args = args if isinstance(args, dict) else {}
         limit = max(1, min(int(args.get("limit") or 20), 200))
-        items = [_public(item) for item in list_manifests(bool(args.get("all_workspaces")))[:limit]]
+        items = [_public(item) for item in list_manifests(_flag(args.get("all_workspaces")))[:limit]]
         return _dumps({"ok": True, "count": len(items), "checkpoints": items})
     except Exception as exc:
         return _dumps({"ok": False, "error": str(exc)})
@@ -629,7 +664,7 @@ def atm_rewind(args: dict, **kwargs) -> str:
                 }
             )
 
-        if not args.get("confirm"):
+        if not _flag(args.get("confirm")):
             return _dumps(
                 {
                     "ok": True,
@@ -649,7 +684,7 @@ def atm_rewind(args: dict, **kwargs) -> str:
                 }
             )
 
-        if blocking and not args.get("allow_irreversible"):
+        if blocking and not _flag(args.get("allow_irreversible")):
             return _dumps(
                 {
                     "ok": False,
