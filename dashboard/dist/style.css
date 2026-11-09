@@ -1,0 +1,81 @@
+/* hermes-time-machine dashboard tab. Uses the host theme variables, with fallbacks. */
+.atm-page { --atm-fg: var(--color-foreground, #e8ecf2); --atm-muted: var(--color-muted-foreground, #8d97a8);
+  --atm-border: var(--color-border, #2c3648); --atm-card: var(--color-card, rgba(255,255,255,.03));
+  --atm-danger: #e5484d; --atm-warn: #ffb020; --atm-ok: #30a46c; --atm-accent: #4c9aff;
+  display: flex; flex-direction: column; gap: 1rem; color: var(--atm-fg); }
+.atm-hero { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
+.atm-hero-side { display: flex; flex-direction: column; align-items: flex-end; gap: .5rem; }
+.atm-eyebrow { font-family: var(--font-mono, monospace); color: var(--atm-warn); font-size: .8rem; letter-spacing: .08em; }
+.atm-title { font-size: 1.4rem; font-weight: 600; margin: .15rem 0 .25rem; }
+.atm-muted { color: var(--atm-muted); }
+.atm-small { font-size: .8rem; }
+.atm-mono { font-family: var(--font-mono, monospace); }
+.atm-error { color: var(--atm-danger); }
+.atm-empty { color: var(--atm-muted); padding: 1.25rem; text-align: center; border: 1px dashed var(--atm-border); border-radius: 8px; }
+.atm-card { border: 1px solid var(--atm-border); background: var(--atm-card); border-radius: 10px; padding: .9rem 1rem; display: flex; flex-direction: column; gap: .5rem; min-width: 0; }
+.atm-card-danger { border-color: color-mix(in srgb, var(--atm-danger) 45%, var(--atm-border)); }
+.atm-card-head { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+.atm-grid2 { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 1rem; }
+@media (max-width: 900px) { .atm-grid2 { grid-template-columns: minmax(0, 1fr); } }
+.atm-badges, .atm-counts { display: flex; gap: .35rem; flex-wrap: wrap; justify-content: flex-end; }
+.atm-counts { justify-content: flex-start; }
+.atm-badge { font-size: .72rem; padding: .15rem .5rem; border-radius: 999px; border: 1px solid var(--atm-border); white-space: nowrap; }
+.atm-badge-danger { color: var(--atm-danger); border-color: color-mix(in srgb, var(--atm-danger) 50%, transparent); background: color-mix(in srgb, var(--atm-danger) 12%, transparent); }
+.atm-badge-warn { color: var(--atm-warn); border-color: color-mix(in srgb, var(--atm-warn) 50%, transparent); background: color-mix(in srgb, var(--atm-warn) 12%, transparent); }
+.atm-badge-ok { color: var(--atm-ok); border-color: color-mix(in srgb, var(--atm-ok) 50%, transparent); }
+.atm-badge-accent { color: var(--atm-accent); border-color: color-mix(in srgb, var(--atm-accent) 50%, transparent); }
+.atm-badge-muted { color: var(--atm-muted); }
+.atm-select { background: transparent; color: var(--atm-fg); border: 1px solid var(--atm-border); border-radius: 6px; padding: .25rem .5rem; }
+
+.atm-timeline { width: 100%; height: auto; display: block; }
+.atm-lane-title { fill: var(--atm-fg); font-size: 15px; font-weight: 600; }
+.atm-lane-sub { fill: var(--atm-muted); font-size: 12px; }
+.atm-axis { stroke: var(--atm-border); stroke-width: 2; }
+.atm-axis-out { stroke: color-mix(in srgb, var(--atm-danger) 40%, var(--atm-border)); }
+.atm-shade { fill: var(--atm-warn); opacity: .08; }
+.atm-cp circle { fill: #1aa39a; stroke: var(--color-background, #0b0f17); stroke-width: 2; transition: r .15s; }
+.atm-cp-manual circle { fill: var(--atm-accent); }
+.atm-cp-after circle { opacity: .4; }
+.atm-cp-sel circle { stroke: var(--atm-warn); stroke-width: 3; opacity: 1; }
+.atm-cp:hover circle { stroke: var(--atm-fg); }
+.atm-cp-time { fill: var(--atm-muted); font-size: 11px; font-family: var(--font-mono, monospace); }
+.atm-cp-label { fill: var(--atm-warn); font-size: 12px; font-family: var(--font-mono, monospace); }
+.atm-effect rect { fill: var(--atm-danger); }
+.atm-effect:hover rect, .atm-focus rect { stroke: var(--atm-fg); stroke-width: 2; }
+.atm-failed rect { fill: transparent; stroke: var(--atm-muted); stroke-width: 2; }
+.atm-cross { stroke: var(--atm-danger); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: .7; }
+.atm-effect-label { fill: var(--atm-fg); font-size: 12px; }
+.atm-failed .atm-effect-label { fill: var(--atm-muted); }
+.atm-stays { fill: var(--atm-danger); font-size: 11px; font-weight: 600; }
+.atm-legend { display: flex; gap: 1.25rem; flex-wrap: wrap; font-size: .78rem; color: var(--atm-muted); }
+.atm-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #1aa39a; vertical-align: -1px; }
+.atm-diamond { display: inline-block; width: 9px; height: 9px; background: var(--atm-danger); transform: rotate(45deg); vertical-align: 0; }
+.atm-diamond-failed { background: transparent; border: 1.5px solid var(--atm-muted); }
+
+.atm-files { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow: auto; border: 1px solid var(--atm-border); border-radius: 6px; }
+.atm-files li { display: flex; justify-content: space-between; gap: .5rem; padding: .3rem .6rem; cursor: pointer; font-size: .82rem; }
+.atm-files li:hover, .atm-file-sel { background: color-mix(in srgb, var(--atm-warn) 10%, transparent); }
+.atm-diff { margin: 0; font-family: var(--font-mono, monospace); font-size: .75rem; line-height: 1.45; max-height: 340px; overflow: auto; border: 1px solid var(--atm-border); border-radius: 6px; padding: .5rem; white-space: pre; }
+.atm-d-add { color: var(--atm-ok); background: color-mix(in srgb, var(--atm-ok) 10%, transparent); }
+.atm-d-del { color: var(--atm-danger); background: color-mix(in srgb, var(--atm-danger) 10%, transparent); }
+.atm-d-hunk { color: var(--atm-accent); }
+.atm-d-file { color: var(--atm-muted); }
+.atm-hint { font-size: .78rem; color: var(--atm-muted); border-top: 1px solid var(--atm-border); padding-top: .5rem; }
+.atm-hint code, .atm-cmd { font-family: var(--font-mono, monospace); font-size: .78rem; }
+.atm-stays-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .6rem; }
+.atm-cmd-row { display: flex; gap: .5rem; align-items: flex-start; }
+.atm-cmd { flex: 1; min-width: 0; word-break: break-all; padding: .35rem .5rem; border-radius: 6px; background: rgba(127,127,127,.14); color: var(--atm-fg); border: 1px solid var(--atm-border); }
+.atm-copy, .atm-filter { font-size: .75rem; padding: .3rem .6rem; border-radius: 6px; border: 1px solid var(--atm-border); background: transparent; color: var(--atm-fg); cursor: pointer; white-space: nowrap; }
+.atm-copy:hover, .atm-filter:hover { border-color: var(--atm-warn); }
+.atm-filter-on { border-color: var(--atm-warn); color: var(--atm-warn); }
+.atm-filters { display: flex; gap: .35rem; }
+.atm-section-head { display: flex; justify-content: space-between; align-items: center; }
+.atm-section-head h3 { margin: 0; font-size: 1.05rem; }
+.atm-effects { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: .75rem; }
+.atm-effect-focus { border-color: var(--atm-warn); }
+.atm-note { font-size: .78rem; color: var(--atm-muted); }
+
+.atm-strip { display: flex; align-items: center; gap: .6rem; padding: .55rem .9rem; margin-bottom: .75rem; border-radius: 8px; font-size: .85rem;
+  border: 1px solid color-mix(in srgb, #e5484d 45%, transparent); background: color-mix(in srgb, #e5484d 8%, transparent); color: inherit; text-decoration: none; }
+.atm-strip-dot { width: 8px; height: 8px; background: #e5484d; transform: rotate(45deg); flex: none; }
+.atm-strip-link { margin-left: auto; color: #ffb020; white-space: nowrap; }
