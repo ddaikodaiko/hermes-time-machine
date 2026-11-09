@@ -35,6 +35,8 @@ If needed later: git push --force-with-lease=refs/heads/main:<new sha> origin <o
 Local files are covered by checkpoint ckpt_20261107T181319_8193be50.
 ```
 
+![Hermes 0.23 approval prompt raised by the plugin before a git push](docs/assets/approval.png)
+
 (Shas are shortened here; the real message carries full 40-character shas. This is the
 output of `python demo/run_demo.py`.) The plugin never approves anything and never
 blocks anything by itself: it returns an `approve` directive and Hermes' approval flow
@@ -59,6 +61,8 @@ The lease means the compensation fails if somebody pushed in the meantime. The p
 only computes and shows the command; it does not run it.
 
 ### 3. Effect memory
+
+![After /rollback the model still knows it pushed](docs/assets/remembers.png)
 
 Each turn, `pre_llm_call` compares the ledger of the current session with what the
 model can still see. If a recorded effect has disappeared from the history (rollback,
