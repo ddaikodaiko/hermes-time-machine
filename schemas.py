@@ -106,6 +106,29 @@ ATM_LIST = {
     },
 }
 
+ATM_DIFF = {
+    "name": "atm_diff",
+    "description": (
+        "Show what changed in the workspace since a checkpoint. Without path: the files that differ. "
+        "With path: a unified diff of that file (checkpoint version -> current version). Read-only; "
+        "use it to understand what you changed before deciding to restore."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "checkpoint_id": {
+                "type": "string",
+                "description": "Checkpoint id, or 'latest'. Defaults to the most recent checkpoint.",
+            },
+            "path": {
+                "type": "string",
+                "description": "Workspace-relative file path to diff, e.g. src/app.py.",
+            },
+        },
+        "required": [],
+    },
+}
+
 ATM_EFFECTS = {
     "name": "atm_effects",
     "description": (

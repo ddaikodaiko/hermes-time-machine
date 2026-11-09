@@ -695,6 +695,16 @@ def atm_rewind(args: dict, **kwargs) -> str:
                 }
             )
 
+        # Undo for the undo: capture the current state first, so this restore can itself be reverted.
+        safety = None
+        try:
+            safety = create_checkpoint(
+                f"before rewind to {manifest['id']}",
+                {"type": "pre_rewind", "checkpoint_id": manifest["id"], "session_id": kwargs.get("session_id")},
+                auto=False,
+            )
+        except Exception as exc:
+            _journal({"type": "pre_rewind_checkpoint_failed", "error": str(exc)[:300]})
         excludes = set(manifest.get("excludes") or snapshot.excludes_for(_CONFIG))
         result = snapshot.restore(target, manifest["tree"], excludes, paths=paths)
         _journal(
@@ -716,13 +726,37 @@ def atm_rewind(args: dict, **kwargs) -> str:
             "previous_contents": result.get("previous_contents"),
             "errors": result.get("errors", []),
             "still_true_outside": blocking,
+            "undo_checkpoint": safety.get("id") if safety else None,
         }
+        if safety:
+            payload["undo_hint"] = f"To undo this restore: /timemachine rewind {safety['id']} --yes"
         if blocking:
             payload["note"] = (
                 "Files were restored. The external effects listed in still_true_outside already "
                 "happened and were NOT undone; use their compensation command if they must be reverted."
             )
         return _dumps(payload)
+    except Exception as exc:
+        return _dumps({"ok": False, "error": str(exc)})
+
+
+def atm_diff(args: dict, **kwargs) -> str:
+    try:
+        from . import dashboard_data
+
+        args = args if isinstance(args, dict) else {}
+        manifest = _resolve_id(args.get("checkpoint_id"))
+        if not manifest:
+            return _dumps({"ok": False, "error": "No checkpoint found."})
+        path = args.get("path")
+        if isinstance(path, str) and path.strip():
+            data = dashboard_data.file_diff(manifest["id"], path.strip())
+            if data.get("error"):
+                return _dumps({"ok": False, "error": data["error"]})
+            return _dumps({"ok": True, "checkpoint": _public(manifest), **data})
+        if manifest.get("workspace") != str(workspace()):
+            return _dumps({"ok": False, "error": "That checkpoint belongs to a different workspace."})
+        return _dumps({"ok": True, "checkpoint": _public(manifest), "changes": preview_changes(manifest)})
     except Exception as exc:
         return _dumps({"ok": False, "error": str(exc)})
 

@@ -113,7 +113,7 @@ class HermesIntegrationTest(unittest.TestCase):
         self.assertIsNone(plugin.error)
         self.assertEqual(
             set(plugin.tools_registered),
-            {"atm_checkpoint", "atm_rewind", "atm_fork", "atm_list", "atm_effects"},
+            {"atm_checkpoint", "atm_rewind", "atm_fork", "atm_list", "atm_effects", "atm_diff"},
         )
         self.assertEqual(
             set(plugin.hooks_registered),

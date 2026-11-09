@@ -1,0 +1,12 @@
+{
+  "name": "hermes-time-machine",
+  "label": "Time machine",
+  "description": "The point of no return, visible: checkpoints a rewind can undo next to the effects nothing can undo, with the undo command for each.",
+  "icon": "Clock",
+  "version": "0.3.0",
+  "tab": { "path": "/time-machine", "position": "after:sessions" },
+  "slots": ["sessions:top"],
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

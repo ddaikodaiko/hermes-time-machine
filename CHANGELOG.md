@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 - 2026-11-09
+
+### Added
+
+- Dashboard tab **Time machine** (`hermes dashboard`): checkpoints and permanent effects on two
+  lanes of one timeline; click a checkpoint to see what a restore would revert (per-file diff)
+  next to what it cannot undo, with copyable undo commands. Marks effects the model was reminded
+  of and effects made through MCP tools. A one-line warning on the Sessions page. Read-only:
+  three GET routes, no restore button. `?checkpoint=<id>` opens a checkpoint directly.
+- `atm_diff(checkpoint_id?, path?)`: files changed since a checkpoint, or a unified diff of one file.
+  `/timemachine diff <id> [path]` does the same for the human.
+- Every restore takes a safety checkpoint first and returns `undo_checkpoint`, so a restore can be undone.
+
 ## 0.2.2 - 2026-11-09
 
 ### Added

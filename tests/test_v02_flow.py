@@ -647,7 +647,7 @@ class RegistrationTest(unittest.TestCase):
                 os.environ.pop("ATM_DATA_DIR", None)
         self.assertEqual(
             sorted(ctx.tools),
-            ["atm_checkpoint", "atm_effects", "atm_fork", "atm_list", "atm_rewind"],
+            ["atm_checkpoint", "atm_diff", "atm_effects", "atm_fork", "atm_list", "atm_rewind"],
         )
         self.assertEqual(
             ctx.hooks,

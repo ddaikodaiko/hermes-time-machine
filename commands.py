@@ -18,7 +18,7 @@ from . import handlers, storage
 
 MAX_CHARS = 3500
 USAGE = (
-    "/timemachine [status|list [n]|effects [id]|diff <id>|"
+    "/timemachine [status|list [n]|effects [id]|diff <id> [path]|"
     "rewind <id> --yes [--allow-irreversible] [paths...]|help]"
 )
 HELP = (
@@ -27,7 +27,7 @@ HELP = (
     + "\n  status    protected folder, newest checkpoint, gate mode, effects a rewind would not undo"
     "\n  list      checkpoints of this workspace, newest first"
     "\n  effects   external effects since a checkpoint, with their compensation commands"
-    "\n  diff      files that differ from a checkpoint"
+    "\n  diff      files that differ from a checkpoint; add a path for its unified diff"
     "\n  rewind    preview a restore; add --yes to apply it"
 )
 
@@ -183,7 +183,15 @@ def _changes(data: dict) -> list[str]:
 
 def _diff(rest: list[str]) -> str:
     if not rest:
-        return "Usage: /timemachine diff <checkpoint id>"
+        return "Usage: /timemachine diff <checkpoint id> [path]"
+    if len(rest) > 1:
+        data = _json(handlers.atm_diff({"checkpoint_id": rest[0], "path": " ".join(rest[1:])}))
+        if not data.get("ok"):
+            return f"Error: {data.get('error')}"
+        if data.get("note"):
+            return f"{data.get('path')}: {data['note']}"
+        body = data.get("diff") or "No text differences."
+        return body + ("\n... (truncated)" if data.get("truncated") else "")
     data = _json(handlers.atm_rewind({"checkpoint_id": rest[0]}))
     if not data.get("ok"):
         return f"Error: {data.get('error')}"

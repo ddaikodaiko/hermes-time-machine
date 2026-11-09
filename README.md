@@ -99,7 +99,24 @@ still_true_outside: git push → origin/main   undo: git push --force-with-lease
 ```
 
 Restoring over a recorded irreversible effect needs `allow_irreversible=true`, which
-acknowledges the effect; it does not undo it.
+acknowledges the effect; it does not undo it. Every restore first takes a checkpoint of the
+current state (`undo_checkpoint` in the result), so a restore can itself be undone.
+`atm_diff` shows the files that changed since a checkpoint, or the unified diff of one file.
+
+### 5. The point of no return, on screen
+
+`hermes dashboard` gets a **Time machine** tab. Two lanes share one time axis: checkpoints a
+rewind can restore, and the effects nothing can restore. Click a checkpoint and the page
+shows what a restore would revert (with a per-file diff) next to what it cannot undo, each
+with its undo command and a copy button. Effects that reached the model only through an
+effect-memory reminder are marked, and effects made through MCP tools say so. The Sessions
+page gets a one-line warning when permanent effects exist.
+
+![Time machine tab in the Hermes dashboard: checkpoints above, permanent effects below, and what a restore cannot undo](docs/assets/dashboard.png)
+
+The tab is read-only: three GET routes under `/api/plugins/hermes-time-machine/`, no
+restore button. Restoring stays a decision made in chat (`/timemachine rewind <id> --yes`)
+or through Hermes' approval prompt.
 
 ## Works with Hermes `/rollback`
 
@@ -186,6 +203,7 @@ Directories never snapshotted: `node_modules`, `.venv`, `venv`, `__pycache__`,
 | `atm_rewind(checkpoint_id?, confirm?, allow_irreversible?, paths?)` | Preview (default) or restore. `confirm=true` applies it, but only after the human approves it in Hermes' approval prompt (no "always" rule is offered, so every model-driven restore asks); `allow_irreversible=true` is also required when irreversible effects were recorded since the checkpoint. |
 | `atm_fork(checkpoint_id?, name?)` | Materialize a checkpoint into a new sibling folder `<workspace>-fork[-name]`. |
 | `atm_effects(since?)` | Effects recorded since a checkpoint, with compensation commands. |
+| `atm_diff(checkpoint_id?, path?)` | Files changed since a checkpoint; with `path`, the unified diff of that file. Read-only. |
 
 ### Hooks
 
@@ -275,7 +293,10 @@ Catalog rule 13:
   `pyproject.toml`. Credentials in
   remote URLs are stripped before anything is stored or shown.
 - Writes only under `HERMES_HOME/plugin-data/hermes-time-machine` (checkpoint manifests,
-  content-addressed objects, trash, journal, effect ledger), and into the workspace when you restore.
+  content-addressed objects, trash, journal, effect ledger, reminded effects), and into the workspace when you restore.
+- The dashboard tab (`dashboard/`) adds three read-only GET routes behind the dashboard's own
+  auth: overview, checkpoint preview and file diff. They read the files above and the
+  protected workspace; no route writes, restores or runs anything.
 
 ## Limitations
 
@@ -294,10 +315,11 @@ Catalog rule 13:
 
 ## Tests and benchmark
 
-Run `python -m unittest discover -s tests`. It discovers 151 tests: unit and flow
+Run `python -m unittest discover -s tests`. It discovers 164 tests: unit and flow
 tests, and 9 integration tests that load the plugin through the real Hermes 0.23
 `PluginManager` and hook dispatch. Those 9 skip when Hermes is not installed in the Python
-you use (one more skips where symlinks are unavailable); in that setup 141 run and pass.
+you use (one more skips where symlinks are unavailable), and the 2 dashboard-route tests
+skip without FastAPI; in that setup 152 run and pass. CI installs FastAPI so the routes are tested.
 
 `python bench/bench_snapshot.py` measures the engine on a synthetic tree. These are the
 author's numbers on a Windows laptop with real-time antivirus (about 4 ms per file open),

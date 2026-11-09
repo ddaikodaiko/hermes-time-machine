@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from . import (  # noqa: F401  (submodules are re-exported for callers and tests)
     commands,
+    dashboard_data,
     effects,
     gate,
     guard,
@@ -28,6 +29,7 @@ _TOOLS = (
     ("atm_fork", schemas.ATM_FORK, handlers.atm_fork),
     ("atm_list", schemas.ATM_LIST, handlers.atm_list),
     ("atm_effects", schemas.ATM_EFFECTS, handlers.atm_effects),
+    ("atm_diff", schemas.ATM_DIFF, handlers.atm_diff),
 )
 
 _HOOKS = (

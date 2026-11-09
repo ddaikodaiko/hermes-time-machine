@@ -23,8 +23,11 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           allow-prereleases: true
-      # Stdlib only: no dependencies to install. Hermes integration tests skip
-      # themselves when Hermes is not importable.
+      # The plugin is stdlib only. FastAPI (shipped by Hermes itself) is installed here
+      # only to exercise the dashboard routes. Hermes integration tests skip themselves
+      # when Hermes is not importable.
+      - name: Test-only dependencies
+        run: python -m pip install --quiet fastapi httpx
       - name: Unit and flow tests
         run: python -m unittest discover -s tests -v
       - name: Standalone demo
