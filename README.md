@@ -2,7 +2,7 @@
 
 **The rollback that knows what it can't undo.**
 
-▶ **[69-second demo](https://x.com/daik0zz/status/2119454575119737147)**: a real, unedited Hermes 0.23 session.
+▶ **[Demo on YouTube](https://youtu.be/i84_S98vUs8)** (82 s, with the v0.3 dashboard) · [on X](https://x.com/daik0zz/status/2119454575119737147): a real, unedited Hermes 0.23 session.
 The agent pushes, `/rollback` erases that turn from the chat, and the model still knows it
 pushed and gives the exact command to undo it.
 
