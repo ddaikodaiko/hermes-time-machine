@@ -1,5 +1,5 @@
 name: hermes-time-machine
-version: 0.2.1
+version: 0.2.2
 description: Incremental checkpoints, a point-of-no-return approval gate and effect memory for Hermes; a rollback restores files, this knows what it cannot undo.
 author: ddaikodaiko
 license: MIT
@@ -71,6 +71,17 @@ config_schema:
     default: []
     label: Gate allow patterns
     description: Regular expressions; a command matching one never triggers the approval prompt.
+  gate_tools:
+    type: str
+    default: approve
+    choices: [approve, warn, off]
+    label: Gate for MCP and plugin tools
+    description: approve asks before MCP/plugin tools that open PRs, merge, release, send messages, deploy or delete; warn only records them; off ignores tools.
+  gate_tool_allow_patterns:
+    type: list
+    default: []
+    label: Tool allow patterns
+    description: Regular expressions on the tool name; a matching tool is recorded in the ledger but never asks.
   auto_budget_seconds:
     type: float
     default: 5.0

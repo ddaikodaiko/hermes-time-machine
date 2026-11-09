@@ -27,6 +27,8 @@ import re
 import shlex
 from pathlib import Path
 
+from . import tool_effects
+
 IRREVERSIBLE_PATTERNS: list[tuple[str, str, str]] = [
     (r"\bgit\s+push\b", "git_push", "Pushed commits or tags to a remote."),
     (r"\bgh\s+pr\s+create\b", "github_pr", "Opened a pull request."),
@@ -34,6 +36,12 @@ IRREVERSIBLE_PATTERNS: list[tuple[str, str, str]] = [
     (r"\bnpm\s+publish\b", "npm_publish", "Published an npm package."),
     (r"\byarn\s+publish\b", "npm_publish", "Published an npm package."),
     (r"\bpnpm\s+publish\b", "npm_publish", "Published an npm package."),
+    (r"\bcargo\s+publish\b", "cargo_publish", "Published a crate to crates.io."),
+    (r"\b(?:python[\d.]*\s+-m\s+)?twine\s+upload\b", "pypi_publish", "Uploaded a Python package to PyPI."),
+    (r"\buv\s+publish\b", "pypi_publish", "Uploaded a Python package to PyPI."),
+    (r"\bpoetry\s+publish\b", "pypi_publish", "Uploaded a Python package to PyPI."),
+    (r"\bhatch\s+publish\b", "pypi_publish", "Uploaded a Python package to PyPI."),
+    (r"\bgem\s+push\b", "gem_push", "Pushed a gem to RubyGems."),
     (r"\bdocker\s+push\b", "docker_push", "Pushed an image to a registry."),
     (r"\bkubectl\s+(apply|delete|patch|replace)\b", "kubectl_write", "Changed a Kubernetes cluster."),
     (r"\bterraform\s+apply\b", "terraform_apply", "Applied infrastructure changes."),
@@ -796,6 +804,114 @@ def _enrich_npm(effect: dict, command: str, workspace: Path | None) -> None:
         )
 
 
+_SAFE_SPEC = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,99}$")
+
+
+def _toml(path: Path) -> dict:
+    text = _read_text(path)
+    if not text:
+        return {}
+    try:
+        import tomllib
+
+        data = tomllib.loads(text)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _project_dir(tokens: list[str], cwd: Path | None, flags: tuple[str, ...]) -> Path | None:
+    """``--manifest-path x/Cargo.toml``, ``--directory dir`` or the segment's cwd."""
+    base = cwd
+    for i, tok in enumerate(tokens):
+        value = None
+        for flag in flags:
+            if tok == flag and i + 1 < len(tokens):
+                value = tokens[i + 1]
+            elif tok.startswith(flag + "="):
+                value = tok.split("=", 1)[1]
+        if value:
+            p = Path(value).expanduser()
+            if base is not None and not p.is_absolute():
+                p = base / p
+            base = p.parent if p.suffix.lower() == ".toml" else p
+    return base
+
+
+def _spec_ok(name, version) -> bool:
+    return (isinstance(name, str) and isinstance(version, str)
+            and bool(_SAFE_SPEC.match(name)) and bool(_SAFE_SPEC.match(version)))
+
+
+def _enrich_cargo(effect: dict, command: str, workspace: Path | None) -> None:
+    found = _find_segment("cargo_publish", command, workspace)
+    effect["compensation_note"] = (
+        "crates.io never deletes a version. `cargo yank` stops new projects from depending on it; "
+        "existing lockfiles keep working."
+    )
+    if not found:
+        return
+    tokens, cwd = found
+    base = _project_dir(tokens, cwd, ("--manifest-path",))
+    package = (_toml(base / "Cargo.toml").get("package") or {}) if base is not None else {}
+    name, version = package.get("name"), package.get("version")
+    if any(t in ("-p", "--package") or t.startswith("--package=") for t in tokens):
+        name = version = None  # a workspace member: its version is not read
+    if _spec_ok(name, version):
+        effect["target"] = f"{name}@{version}"
+        effect["pre_state"] = {"package": name, "version": version}
+        effect["compensation"] = f"cargo yank --version {version} {name}"
+
+
+_DIST_FILE = re.compile(r"^([A-Za-z0-9_.]+?)-(\d[\w.+!]*?)(?:-py|-cp|\.tar\.gz$|\.zip$)")
+
+
+def _enrich_pypi(effect: dict, command: str, workspace: Path | None) -> None:
+    found = _find_segment("pypi_publish", command, workspace)
+    name = version = None
+    if found:
+        tokens, cwd = found
+        files = [t for t in tokens if not t.startswith("-") and re.search(r"\.(whl|tar\.gz|zip)$", t)]
+        m = _DIST_FILE.match(Path(files[0]).name) if files else None
+        if m:
+            name, version = m.group(1), m.group(2)
+        else:
+            base = _project_dir(tokens, cwd, ("--directory", "--project"))
+            if base is not None:
+                data = _toml(base / "pyproject.toml")
+                project = data.get("project") or {}
+                poetry = (data.get("tool") or {}).get("poetry") or {}
+                name = project.get("name") or poetry.get("name")
+                version = project.get("version") or poetry.get("version")
+    if _spec_ok(name, version):
+        effect["target"] = f"{name}=={version}"
+        effect["pre_state"] = {"package": name, "version": version}
+        effect["compensation_note"] = (
+            f"PyPI never accepts the same file twice and has no CLI undo. Yank {name} {version} on "
+            f"https://pypi.org/manage/project/{name}/releases/ (pip then skips it unless pinned), "
+            "then publish a fixed version."
+        )
+    else:
+        effect["compensation_note"] = (
+            "PyPI never accepts the same file twice and has no CLI undo; yank the release on pypi.org "
+            "and publish a fixed version. The package name and version could not be read."
+        )
+
+
+def _enrich_gem(effect: dict, command: str, workspace: Path | None) -> None:
+    found = _find_segment("gem_push", command, workspace)
+    effect["compensation_note"] = "Yanking removes the version from the index; anyone who installed it keeps it."
+    if not found:
+        return
+    gem = _first_positional(_after(found[0], "push"), {"--host", "-k", "--key", "--otp"})
+    m = re.match(r"^(.+)-(\d[\w.]*)\.gem$", Path(gem).name) if gem else None
+    if m and _spec_ok(m.group(1), m.group(2)):
+        name, version = m.group(1), m.group(2)
+        effect["target"] = f"{name}-{version}"
+        effect["pre_state"] = {"package": name, "version": version}
+        effect["compensation"] = f"gem yank {name} -v {version}"
+
+
 _GH_RELEASE_VALUE_OPTS = {"-t", "--title", "-n", "--notes", "-F", "--notes-file", "--target", "-R", "--repo",
                           "--discussion-category", "--notes-start-tag"}
 
@@ -907,10 +1023,16 @@ def _analyse(tool_name: str, args, workspace: Path | None, read_disk: bool) -> l
             seen.add(kind)
             effect = _effect(kind, False, reason, command)
             try:
-                if read_disk or kind in ("docker_push", "kubectl_write", "github_release"):
+                if read_disk or kind in ("docker_push", "kubectl_write", "github_release", "gem_push"):
                     if kind == "npm_publish":
                         if read_disk:
                             _enrich_npm(effect, command, workspace)
+                    elif kind == "cargo_publish":
+                        _enrich_cargo(effect, command, workspace)
+                    elif kind == "pypi_publish":
+                        _enrich_pypi(effect, command, workspace)
+                    elif kind == "gem_push":
+                        _enrich_gem(effect, command, workspace)
                     elif kind == "github_release":
                         _enrich_release(effect, command, workspace)
                     elif kind == "docker_push":
@@ -933,6 +1055,12 @@ def _analyse(tool_name: str, args, workspace: Path | None, read_disk: bool) -> l
             if matched:
                 seen.add(kind)
                 effects.append(_effect(kind, True, reason, command, note=_LOCAL_NOTE))
+
+    if tool_name not in TERMINAL_TOOLS and not command:
+        try:
+            effects.extend(tool_effects.classify_tool(tool_name, args))
+        except Exception:
+            pass
 
     if tool_name not in TERMINAL_TOOLS:
         for key in PATH_KEYS:
@@ -1097,6 +1225,13 @@ def finalize(effect: dict, result, workspace: Path | None) -> dict:
     try:
         out = dict(effect)
         out["pre_state"] = dict(effect.get("pre_state") or {})
+        if out.get("source") == "tool":
+            res = tool_effects.tool_outcome(result)
+            out["outcome"] = res
+            out["executed"] = res["status"] != "failed"
+            if out["executed"]:
+                tool_effects.finalize_tool(out, result)
+            return out
         res = outcome("", result)
         out["outcome"] = res
         out["executed"] = res["status"] != "failed"

@@ -18,6 +18,7 @@ every hook swallows its own exceptions and ``pre_tool_call`` is time-bounded.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 
@@ -124,6 +125,30 @@ def _safe_journal(record: dict) -> None:
         handlers.record_journal(record)
     except Exception:
         pass
+
+
+def _tool_filter(found, config) -> list:
+    """Drop effects detected from MCP/plugin tool names when ``gate_tools`` is off."""
+    if config.get("gate_tools", "approve") != "off":
+        return list(found or [])
+    return [e for e in found or [] if not (isinstance(e, dict) and e.get("source") == "tool")]
+
+
+def _tool_allowed(tool_name, config) -> bool:
+    for pattern in config.get("gate_tool_allow_patterns") or []:
+        try:
+            if re.search(pattern, str(tool_name or ""), re.IGNORECASE):
+                return True
+        except re.error:
+            continue
+    return False
+
+
+def _gated(tool_name, found, config) -> list:
+    """Effects that should reach the approval gate (tool effects in warn mode or allow-listed only get recorded)."""
+    if config.get("gate_tools", "approve") == "approve" and not _tool_allowed(tool_name, config):
+        return list(found)
+    return [e for e in found if not (isinstance(e, dict) and e.get("source") == "tool")]
 
 
 def _is_irreversible(found) -> bool:
@@ -250,7 +275,7 @@ def pre_tool_call(tool_name=None, args=None, **kwargs):
         args = args if isinstance(args, dict) else {}
         session = handlers.session_dir()
 
-        found = effects.preflight(str(tool_name), args, session)
+        found = _tool_filter(effects.preflight(str(tool_name), args, session), config)
 
         checkpoint_id = None
         if config.get("auto_checkpoint", True):
@@ -261,6 +286,19 @@ def pre_tool_call(tool_name=None, args=None, **kwargs):
 
         _stash(_pending_key(tool_name, kwargs, args), found)
 
+        if not _is_irreversible(found):
+            return None
+        held = [e for e in found if e not in _gated(tool_name, found, config)]
+        if held:
+            _safe_journal(
+                {
+                    "type": "gate_warning",
+                    "tool": tool_name,
+                    "session_id": kwargs.get("session_id"),
+                    "effects": [{"kind": e.get("kind"), "target": e.get("target")} for e in held],
+                }
+            )
+        found = _gated(tool_name, found, config)
         if not _is_irreversible(found):
             return None
         mode = config.get("irreversible_gate", "approve")
@@ -349,7 +387,7 @@ def post_tool_call(tool_name=None, args=None, result=None, status=None, **kwargs
 
         found = _unstash(_pending_key(tool_name, kwargs, args))
         if found is None:
-            found = effects.classify(str(tool_name), args, session)
+            found = _tool_filter(effects.classify(str(tool_name), args, session), config)
 
         tool_call_id = kwargs.get("tool_call_id")
         with _LOCK:
@@ -497,6 +535,38 @@ def lineage(session_id) -> list[str]:
     return chain
 
 
+def _reminded_path():
+    return storage.data_dir() / "reminded.json"
+
+
+def _load_reminded(sid: str) -> set:
+    """Keys already reminded in *sid*, from disk (survives a gateway restart)."""
+    try:
+        data = json.loads(_reminded_path().read_text(encoding="utf-8"))
+        keys = data.get(sid) if isinstance(data, dict) else None
+        return {str(k) for k in keys} if isinstance(keys, list) else set()
+    except Exception:
+        return set()
+
+
+def _save_reminded(sid: str, keys: set) -> None:
+    try:
+        path = _reminded_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except Exception:
+            data = {}
+        data.pop(sid, None)
+        data[sid] = sorted(keys)[-_MAX_ENTRIES:]
+        while len(data) > _MAX_ENTRIES:
+            data.pop(next(iter(data)), None)
+        storage.write_json_atomic(path, data)
+    except Exception as exc:
+        _safe_journal({"type": "hook_error", "hook": "pre_llm_call.persist", "error": str(exc)[:300]})
+
+
 def pre_llm_call(**kwargs):
     try:
         config = handlers.config()
@@ -509,7 +579,11 @@ def pre_llm_call(**kwargs):
         sid = str(session_id)
         records = handlers.read_ledger()
         with _LOCK:
+            fresh = sid not in _NOTIFIED
+        disk = _load_reminded(sid) if fresh else set()
+        with _LOCK:
             already = _NOTIFIED.setdefault(sid, set())
+            already.update(disk)
             snapshot_already = set(already)
         # Only the compaction lineage recorded by post_compaction counts. Hermes also
         # passes parent_session_id for delegated subagents, which must NOT inherit the
@@ -529,6 +603,8 @@ def pre_llm_call(**kwargs):
                     already.discard(old)
             while len(_NOTIFIED) > _MAX_ENTRIES:
                 _NOTIFIED.pop(next(iter(_NOTIFIED)), None)
+            persisted = set(already)
+        _save_reminded(sid, persisted)
         return {"context": text}
     except Exception as exc:
         _safe_journal({"type": "hook_error", "hook": "pre_llm_call", "error": str(exc)[:300]})

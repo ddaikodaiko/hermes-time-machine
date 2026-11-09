@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.2 - 2026-11-09
+
+### Added
+
+- MCP and plugin tools go through the gate, the ledger and effect memory. Hermes 0.23 names MCP tools
+  `mcp__<server>__<tool>`; GitHub tools (pull requests, issues, merges, releases, direct commits,
+  branch deletes) get a target and, once the call returns, a compensation (`gh pr close 42 --repo o/r`,
+  `gh release delete`, revert recipes with the merge or commit sha). Messaging tools (Slack, Discord,
+  Telegram, email, ...) and any tool named for an irreversible verb (deploy, publish, delete, send,
+  merge, refund, ...) are recorded with honest notes. Only the tool name decides; reads never trigger;
+  dry runs are skipped; failure is read from the structured result.
+- Settings `gate_tools` (`approve`/`warn`/`off`) and `gate_tool_allow_patterns` (regex on tool names).
+- Package publishers: `cargo publish` (`cargo yank --version` from `Cargo.toml`), `twine upload`,
+  `uv publish`, `poetry publish`, `hatch publish` (name and version from `pyproject.toml` or the dist
+  file, with the PyPI yank page), `gem push` (`gem yank -v` from the gem file name).
+
+### Changed
+
+- Effect-memory reminders already shown are persisted (`reminded.json`), so a gateway restart does not
+  repeat them.
+- README: demo GIF and a coverage table.
+
 ## 0.2.1 - 2026-11-08
 
 Found in a live Hermes 0.23 session and an adversarial review.

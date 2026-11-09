@@ -6,6 +6,8 @@
 The agent pushes, `/rollback` erases that turn from the chat, and the model still knows it
 pushed and gives the exact command to undo it.
 
+![The agent asks before pushing, /rollback erases the turn, the model still remembers the push](docs/assets/demo.gif)
+
 A plugin for [Hermes Agent](https://hermes-agent.nousresearch.com) 0.23+. It adds
 agent-visible checkpoints, an approval at the point of no return, a ledger of the
 effects a rewind cannot reach, and a memory of those effects that survives
@@ -14,7 +16,7 @@ effects a rewind cannot reach, and a memory of those effects that survives
 ## The problem
 
 - Rewinding files is solved. Hermes has `/rollback`, and you can always restore a folder.
-- What no rewind reaches is everything that already left your machine: `git push`, `npm publish`, `terraform apply`, a pull request, a release.
+- What no rewind reaches is everything that already left your machine: `git push`, `npm publish`, `cargo publish`, `terraform apply`, a pull request, a release, a Slack message sent through an MCP server.
 - Worse, `/rollback`, `/undo`, `/retry` and compaction rewind the *conversation* too. The model forgets it pushed. The remote does not.
 
 ## What it does
@@ -157,6 +159,8 @@ Every key in `plugin.yaml` `config_schema`:
 | `extra_risky_patterns` | `[]` | Extra regular expressions that mark a terminal command as risky. |
 | `irreversible_gate` | `approve` | `approve` asks through Hermes' approval prompt; `warn` only writes a journal entry; `off` disables the gate. |
 | `gate_allow_patterns` | `[]` | Regular expressions; a command matching one never triggers the approval prompt. |
+| `gate_tools` | `approve` | Effects of MCP and plugin tools: `approve` asks, `warn` records them in the ledger without asking, `off` ignores tools. |
+| `gate_tool_allow_patterns` | `[]` | Regular expressions on the tool name; a matching tool is recorded but never asks. |
 | `auto_budget_seconds` | `5.0` | Time limit (0.5-20 s) for an automatic checkpoint. A capture that runs out keeps its progress and resumes next time. |
 | `max_file_mb` | `50` | Files bigger than this are skipped (and counted) instead of copied. |
 | `effect_memory` | `true` | Remind the model of irreversible effects it can no longer see. |
@@ -198,6 +202,23 @@ Directories never snapshotted: `node_modules`, `.venv`, `venv`, `__pycache__`,
 `status` (default) shows the protected folder, newest checkpoint, gate mode and the
 effects a rewind would not undo. `rewind` previews unless `--yes` is given.
 
+## What it covers
+
+| Where the effect comes from | Examples | Compensation the plugin computes |
+|---|---|---|
+| `git` | `git push`, force push, branch delete, `commit && push` | exact `--force-with-lease` command (remote sha read from `.git`) |
+| Package registries | `npm`/`yarn`/`pnpm publish`, `cargo publish`, `twine upload`, `uv publish`, `poetry publish`, `hatch publish`, `gem push` | `npm unpublish`, `cargo yank --version`, `gem yank -v`; PyPI yank page (name/version read from `package.json`, `Cargo.toml`, `pyproject.toml` or the dist file name) |
+| GitHub CLI | `gh pr create`, `gh release create` | `gh pr close <url>`, `gh release delete <tag> --cleanup-tag` |
+| **MCP / plugin tools** | `mcp__github__create_pull_request`, `merge_pull_request`, `create_release`, `push_files`, `delete_branch`; Slack/Discord/Telegram/email send tools; any tool named `deploy`/`publish`/`delete`/`send`/`merge`/`refund`/... | `gh pr close N --repo o/r` and `gh issue close` (number read from the call result), `gh release delete`; revert recipes for merges and direct commits with the sha from the result |
+| Infrastructure and services | `kubectl`, `terraform apply`, `docker push`, `aws`/`gcloud`/`az`, `curl`/`wget` writes, SQL, `mail`, `ssh` | `kubectl delete -f` / `apply -f` where it is safe; guidance for the rest |
+| Files | writes outside the protected workspace | none (no checkpoint exists there) |
+
+A model with a GitHub or Slack MCP server never types `gh` or `curl`: it calls a tool. Those calls
+go through the same gate, ledger and effect memory. Only the tool *name* decides
+(`list_*`, `get_*`, `search_*` never trigger, and words inside arguments are never searched), dry runs are
+skipped, and success or failure is read from the structured result (`isError`, `error`), never from words
+in free text.
+
 ## How the gate decides
 
 1. `pre_tool_call` classifies the command (terminal-like tools) into effects. Effects
@@ -209,7 +230,9 @@ effects a rewind would not undo. `rewind` previews unless `--yes` is given.
 2. Mode `approve` (default): returns `{"action": "approve", "message": ..., "rule_key": ...}`.
    Hermes shows its approval prompt; the human decides. Mode `warn`: only a journal entry.
    Mode `off`: nothing.
-3. A command matching any regex in `gate_allow_patterns` skips the prompt.
+3. A command matching any regex in `gate_allow_patterns` skips the prompt. For MCP and plugin tools,
+   `gate_tools` (`approve`/`warn`/`off`) sets the mode and `gate_tool_allow_patterns` matches tool names
+   (e.g. `^mcp__slack__` to let Slack messages through while still recording them).
 4. `rule_key` is stable per kind and target (`hermes-time-machine:git_push:origin/main`), so
    Hermes' "approve for this session" applies to that kind of push to that branch, not to every irreversible command.
 5. `atm_rewind` with `confirm=true` (the model overwriting workspace files) always returns an
@@ -244,7 +267,8 @@ Catalog rule 13:
 
 - No shell commands, no subprocesses, no network calls, no background processes, no credentials.
 - Reads files in the protected workspace to snapshot them. To capture pre-state it reads
-  `.git/HEAD`, `.git/config`, `.git/packed-refs`, refs, and `package.json`. Credentials in
+  `.git/HEAD`, `.git/config`, `.git/packed-refs`, refs, `package.json`, `Cargo.toml` and
+  `pyproject.toml`. Credentials in
   remote URLs are stripped before anything is stored or shown.
 - Writes only under `HERMES_HOME/plugin-data/hermes-time-machine` (checkpoint manifests,
   content-addressed objects, trash, journal, effect ledger), and into the workspace when you restore.
@@ -260,13 +284,16 @@ Catalog rule 13:
 - Restoring with `exclude_git: false` also restores `.git`, so local branch refs go back too.
 - Bulk pushes (`--all`, `--tags`, `--mirror`, several refspecs) get an approval and a note, but no automatic compensation.
 - Terraform, Docker, cloud, HTTP, SQL, mail and remote-shell effects are recorded with guidance, not a command.
+- MCP and plugin tools are classified by name. A tool with an unusual name for an irreversible action
+  (no `send`/`publish`/`delete`/... verb) is not seen; a reminder of what it did needs the call to be recorded.
+- PyPI has no command-line yank, so the plugin links the release page instead of giving a command.
 
 ## Tests and benchmark
 
-Run `python -m unittest discover -s tests`. It discovers 122 tests: unit and flow
+Run `python -m unittest discover -s tests`. It discovers 151 tests: unit and flow
 tests, and 9 integration tests that load the plugin through the real Hermes 0.23
 `PluginManager` and hook dispatch. Those 9 skip when Hermes is not installed in the Python
-you use (one more skips where symlinks are unavailable); in that setup 112 run and pass.
+you use (one more skips where symlinks are unavailable); in that setup 141 run and pass.
 
 `python bench/bench_snapshot.py` measures the engine on a synthetic tree. These are the
 author's numbers on a Windows laptop with real-time antivirus (about 4 ms per file open),
@@ -288,7 +315,7 @@ repository and a local bare remote written as files. See `docs/DESIGN.md` and `d
 ## Roadmap
 
 - Measure and publish Linux and macOS benchmarks.
-- More compensation recipes (Terraform state, Helm, PyPI yank).
+- More compensation recipes (Terraform state, Helm).
 - Use Hermes remote backends for process-level state, not native binaries.
 
 ## License

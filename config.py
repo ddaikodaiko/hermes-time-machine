@@ -21,6 +21,8 @@ DEFAULTS = {
     "extra_risky_patterns": [],
     "irreversible_gate": "approve",
     "gate_allow_patterns": [],
+    "gate_tools": "approve",
+    "gate_tool_allow_patterns": [],
     "auto_budget_seconds": 5.0,
     "max_file_mb": 50,
     "effect_memory": True,
@@ -103,6 +105,9 @@ def normalize(candidate: dict | None) -> dict:
     mode = str(config["irreversible_gate"] or "").strip().lower()
     config["irreversible_gate"] = mode if mode in GATE_MODES else "approve"
     config["gate_allow_patterns"] = _as_patterns(config["gate_allow_patterns"])
+    tools_mode = str(config["gate_tools"] or "").strip().lower()
+    config["gate_tools"] = tools_mode if tools_mode in GATE_MODES else "approve"
+    config["gate_tool_allow_patterns"] = _as_patterns(config["gate_tool_allow_patterns"])
 
     for key in (
         "auto_checkpoint",
