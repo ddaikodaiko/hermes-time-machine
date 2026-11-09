@@ -91,7 +91,7 @@ answers from the ledger and offers the compensation.
 Incremental, content-addressed, time-bounded snapshots, taken before the first
 file-changing call of each turn and before risky commands. Unlike a slash command, the
 *agent* can use them: `atm_checkpoint`, `atm_list`, `atm_rewind` (preview, restore all
-or only some paths), `atm_fork` and `atm_effects`. Every preview lists what the restore
+or only some paths), `atm_fork`, `atm_effects` and `atm_diff`. Every preview lists what the restore
 will **not** undo:
 
 ```

@@ -48,11 +48,16 @@ checkpoint engine so it can never stall a tool call.
    capture / diff / restore / materialize          objects/  content-addressed files (sha256)
    resumable, deadline-bounded                     checkpoints/<id>/manifest.json  (tree)
    tools: atm_checkpoint atm_list atm_rewind       seeds/    partial captures to resume
-          atm_fork atm_effects  + /timemachine     trash/    files replaced by a rewind
-                                                   effects.jsonl  journal.jsonl  lineage.json
+          atm_fork atm_effects atm_diff            trash/    files replaced by a rewind
+          + /timemachine                           effects.jsonl  journal.jsonl  lineage.json
+                                                   reminded.json
+   DASHBOARD (dashboard/, read-only)
+   Time machine tab + sessions:top strip  ──GET──► dashboard_data.py (overview, preview, diff)
 ```
 
 Module map: `guard.py` (hooks), `effects.py` (classification, pre-state, compensation),
+`tool_effects.py` (effects of MCP and plugin tools, by tool name),
+`dashboard_data.py` and `dashboard/` (read-only dashboard tab),
 `gate.py` (approval message), `memory.py` (effect memory), `policy.py` (risk and mutation
 patterns), `snapshot.py` (engine), `handlers.py` (tools and ledger queries), `commands.py`
 (`/timemachine`), `config.py`, `storage.py`.
@@ -182,9 +187,10 @@ right repo; credentials in remote URLs are stripped.
 
 ## Evaluation
 
-122 tests via `python -m unittest discover -s tests` (9 of them integration
-tests that need Hermes 0.23 installed and skip otherwise), covering the engine, resumable
-capture, effect parsing, the gate message, effect memory and the full push, rollback,
-remind, rewind flow. The integration tests load the plugin through the real Hermes
+164 tests via `python -m unittest discover -s tests` (9 integration tests need Hermes
+0.23 installed and 2 dashboard-route tests need FastAPI; both skip otherwise), covering the
+engine, resumable capture, effect parsing for commands and MCP tools, package publishers, the
+gate message, effect memory, the dashboard data and routes, undoable restores and the full
+push, rollback, remind, rewind flow. CI runs on Linux, macOS and Windows with Python 3.11–3.14. The integration tests load the plugin through the real Hermes
 `PluginManager` and fire hooks through Hermes' dispatch. `python demo/run_demo.py` replays
 the flow end to end without Hermes.

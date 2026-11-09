@@ -19,9 +19,10 @@ The catalog PR is human-reviewed. If it is still pending at the deadline, submit
 | 1 | Thu 5 Nov | Scaffold, policy, effect ledger, tar checkpoints, smoke tests, demo script (v0.1.0) | done |
 | 2 | Fri 6 Nov | Plugin loaded in Hermes 0.19 through the real `PluginManager`; mutation checkpoints; safety fixes; public repo | done |
 | 3 | Sat 7 Nov | v0.2 pivot (below) | done |
-| 4 | Mon 9 Nov | Reopen catalog PR with the new SHA; record the demo | pending |
-| 5 | Tue 10 Nov | X post, Typeform | pending |
-| 6 | Wed 11 Nov | Re-validate the pinned SHA, answer review, confirm before 17:00 EST | pending |
+| 4 | Sun 8 Nov | v0.2.1 from a live session and an adversarial review; demo recorded; catalog PR reopened | done |
+| 5 | Mon 9 Nov | #149553 merged (v0.2.1); X demo; Typeform submitted; v0.2.2 (MCP tools, publishers); v0.3.0 (dashboard tab, `atm_diff`, undoable restores); YouTube demo; SHA-bump PR #152080 | done |
+| 6 | Tue 10 Nov | Wait for #152080; answer review if any; visibility (X, Discord) | in progress |
+| 7 | Wed 11 Nov | Confirm the pin before 17:00 EST; no new features | pending |
 
 ### Day 3 — what was actually done
 
@@ -48,13 +49,21 @@ Done in response (v0.2.0):
 - [x] Benchmark on a Windows laptop with real-time antivirus (worst case; no Linux or macOS numbers).
 - [x] Docs rewritten: README, DESIGN, DEMO, SUBMISSION, CHANGELOG; `demo/run_demo.py` rebuilt.
 
+### Days 4–5 — after the v0.2 pivot
+
+- [x] v0.2.1: model-driven restores always ask the human; `commit && push` chains; fewer false positives.
+- [x] Catalog entry merged ([#149553](https://github.com/NousResearch/hermes-agent/pull/149553), pin `1ac9c78`).
+- [x] Demo on X ([tweet](https://x.com/daik0zz/status/2119454575119737147)) and YouTube
+      ([video](https://youtu.be/i84_S98vUs8)); Typeform submitted.
+- [x] v0.2.2: MCP and plugin tools through the gate, ledger and memory; cargo/PyPI/gem publishers;
+      persistent reminders; README GIF, screenshots, coverage table; catalog banner.
+- [x] v0.3.0: read-only Time machine dashboard tab; `atm_diff`; a safety checkpoint before every restore.
+- [x] 164 tests, CI 12/12 on 3 OS; `validate` and `doctor` pass (6 tools, 5 hooks).
+
 ## Remaining
 
-- [ ] Push the final commit, pin the 40-character SHA in `docs/SUBMISSION.md`.
-- [ ] Reopen the catalog PR with the v0.2.0 entry and the new SHA.
-- [ ] Record the 90 s demo (`docs/DEMO.md`); link it in the PR body.
-- [ ] Post on X tagging `@NousResearch`.
-- [ ] Submit the Typeform before Wed 11 Nov 17:00 EST.
+- [ ] [#152080](https://github.com/NousResearch/hermes-agent/pull/152080) (bump to 0.3.0, pin `78ce6f5`) merged.
+      Do not push to its branch again unless review asks for it.
 - [ ] Optional: run `bench/bench_snapshot.py` on Linux or macOS and add the numbers.
 
 ## Kill switches
@@ -65,6 +74,7 @@ Done in response (v0.2.0):
 | Demo recording against a real model fails | Record `python demo/run_demo.py --pause`; it needs no Hermes install. |
 | A newer Hermes changes a hook | Keep the tools working (`atm_checkpoint` / `atm_rewind`) and disclose the degradation. |
 | Time runs out | Do not add features. Reliability and a clean demo beat scope. |
+| #152080 not merged by the deadline | The merged v0.2.1 entry stays valid; the repo, README and videos show v0.3.0. |
 
 ## What not to do
 
